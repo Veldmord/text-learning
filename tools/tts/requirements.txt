@@ -1,5 +1,5 @@
 # torch и torchaudio ставятся отдельно с CPU-индексом PyTorch (см. .github/workflows/deploy.yml)
-omegaconf==2.3.0
+omegaconf==2.4.0
 numpy>=1.26,<3
 # модель Silero v5 импортирует scipy при загрузке (torch.hub)
 scipy>=1.11,<2
