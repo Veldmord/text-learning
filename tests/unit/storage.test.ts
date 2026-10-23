@@ -193,8 +193,8 @@ describe('резервная копия', () => {
 
 describe('настройки', () => {
   it('приводят мусор к допустимым значениям', () => {
-    const s = sanitizeSettings({ theme: 'neon', speed: 7, fontSize: -3, context: 2.6, cueWords: 1, premiere: '2026-12-01', characterRate: { dama: 9, starik: 'x' }, audioRunK: 1.23 });
-    expect(s).toMatchObject({ theme: 'system', speed: 2, fontSize: 0, context: 3, cueWords: 5, premiere: '2026-12-01', characterRate: { dama: 1.5, starik: 1 }, audioRunK: 1.2 });
+    const s = sanitizeSettings({ theme: 'neon', speed: 7, fontSize: -3, context: 2.6, cueWords: 1, premiere: '2026-12-01', characterRate: { dama: 9, starik: 'x' }, audioRunK: 1.23, audioRun: 'nope' });
+    expect(s).toMatchObject({ theme: 'system', speed: 2, fontSize: 0, context: 3, cueWords: 5, premiere: '2026-12-01', characterRate: { dama: 1.5, starik: 1 }, audioRunK: 1.2, audioRun: 'cue' });
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(sanitizeSettings({ premiere: '1 декабря' }).premiere).toBeNull();
   });

@@ -1,6 +1,6 @@
 // Режимы тренировки — docs/ARCHITECTURE.md, раздел 5.1.
 
-export type ModeId = 'read' | 'letters' | 'vanish' | 'chunks' | 'cue' | 'audio' | 'weak' | 'order' | 'type';
+export type ModeId = 'read' | 'letters' | 'run' | 'vanish' | 'chunks' | 'cue' | 'audio' | 'weak' | 'order' | 'type';
 
 export interface ModeDef {
   id: ModeId;
@@ -47,6 +47,20 @@ export const MODES: Record<ModeId, ModeDef> = {
     graded: true,
     repeatOnAgain: false,
     icon: 'Аб',
+  },
+  run: {
+    id: 'run',
+    title: 'Прогон с буквами',
+    short: 'Прогон',
+    description:
+      'Сцена идёт сверху вниз: реплики партнёров видны и звучат целиком, ваши — первыми буквами. «Далее» открывает вашу реплику, следующее «Далее» ведёт сцену дальше.',
+    basis: 'Практика актёров + контекст сцены',
+    when: 'Связать реплики в сцену',
+    affectsFsrs: false,
+    playsCue: true,
+    graded: true,
+    repeatOnAgain: false,
+    icon: '📜',
   },
   vanish: {
     id: 'vanish',
@@ -142,7 +156,7 @@ export const MODES: Record<ModeId, ModeDef> = {
 };
 
 /** Порядок режимов в интерфейсе — по «Пути роли» */
-export const TRAIN_MODES: ModeId[] = ['letters', 'vanish', 'chunks', 'cue', 'audio', 'weak', 'order', 'type'];
+export const TRAIN_MODES: ModeId[] = ['letters', 'run', 'vanish', 'chunks', 'cue', 'audio', 'weak', 'order', 'type'];
 
 export const isModeId = (v: string | undefined): v is ModeId => !!v && v in MODES;
 

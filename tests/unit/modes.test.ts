@@ -108,6 +108,7 @@ describe('показ своей реплики', () => {
   it('первые буквы и показ целиком', () => {
     expect(piecesText(linePieces(l1, { ...base, mode: 'letters', showAsides: false }))).toBe('Т п? Я ж.');
     expect(piecesText(linePieces(l1, { ...base, mode: 'letters', revealed: true }))).toBe('(Тихо.) Ты пришёл? Я ждала.');
+    expect(piecesText(linePieces(l1, { ...base, mode: 'run', showAsides: false }))).toBe('Т п? Я ж.');
   });
 
   it('исчезающий текст скрывает долю слов по уровню', () => {

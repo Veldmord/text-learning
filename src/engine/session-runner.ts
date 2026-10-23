@@ -1,10 +1,10 @@
 // Исполнитель сессии: держит состояние машины, исполняет эффекты через порты аудио и хранилища.
 // Порты — интерфейсы, поэтому engine не зависит от браузерных API и тестируется с фейками.
-import { cuePlan, echoUnits, lineDurationMs, type PlanSettings, type SpeechUnit } from './audio-plan';
+import { echoUnits, lineDurationMs, playPlan, stepPlan, type AudioRunSpan, type CuePlan, type PlanSettings, type SpeechUnit } from './audio-plan';
 import { applyGrade, cursorKey, type CardRow, type ReviewRow } from './model';
 import { MODES, type ModeId } from './modes';
 import { findStepIndex, type Step } from './modes/steps';
-import { getLine, rolesKey, type PlayIndex } from './queries';
+import { getLine, parseScope, rolesKey, scopeItemIds, type PlayIndex } from './queries';
 import { currentStep, initialState, reduce, type Effect, type SessionAction, type SessionState } from './session-machine';
 import type { Line, LineId } from './types';
 
@@ -32,6 +32,8 @@ export interface RunnerSettings extends PlanSettings {
   echo: boolean;
   /** Пауза в аудиопрогоне: k × длительность своей реплики */
   audioRunK: number;
+  audioRun: AudioRunSpan;
+  skipScenesWithoutRole: boolean;
   premiere: string | null;
 }
 
@@ -54,13 +56,14 @@ export class SessionRunner {
   private queue: Promise<unknown> = Promise.resolve();
   private disposed = false;
   private readonly now: () => number;
+  private scopeIds: Set<string> | null = null;
 
   constructor(
     private readonly deps: RunnerDeps,
     mode: ModeId,
   ) {
     const s = deps.settings();
-    this.state = initialState(mode, { autoAdvance: s.autoAdvance, echo: s.echo });
+    this.state = initialState(mode, { autoAdvance: s.autoAdvance, echo: s.echo, waitOnMine: s.audioRun === 'play' });
     this.now = deps.now ?? Date.now;
   }
 
@@ -87,6 +90,12 @@ export class SessionRunner {
   setMode(mode: ModeId, steps: Step[]): void {
     const lineId = currentStep(this.state)?.lineId;
     this.dispatch({ type: 'setMode', mode, steps, index: findStepIndex(steps, this.deps.index, lineId), now: this.now() });
+  }
+
+  /** Начать текущий шаг заново — например, после смены варианта аудиопрогона. */
+  restartStep(): void {
+    if (this.state.phase === 'done') return;
+    this.dispatch({ type: 'start', steps: this.state.steps, index: this.state.index, now: this.now() });
   }
 
   /** Дождаться записи всех оценок (для тестов и перед уходом с экрана). */
@@ -120,8 +129,16 @@ export class SessionRunner {
       const line = getLine(this.deps.index, step.lineId);
       return line ? echoUnits(line, step.kind === 'chunk' ? step.sentenceIdx : undefined) : [];
     }
-    const plan = cuePlan(this.deps.index, step.lineId, this.deps.roles, this.deps.settings());
+    const plan = this.planFor(step.lineId);
     return phase === 'context' ? plan.context : plan.cue;
+  }
+
+  private planFor(lineId: LineId): CuePlan {
+    const { index, roles } = this.deps;
+    const s = this.deps.settings();
+    if (this.state.mode !== 'audio' || s.audioRun !== 'play') return stepPlan(this.state.mode, index, lineId, roles, s);
+    this.scopeIds ??= scopeItemIds(index, parseScope(this.deps.scopeKey));
+    return playPlan(index, lineId, roles, s, { inScope: this.scopeIds, skipScenesWithoutRole: s.skipScenesWithoutRole });
   }
 
   private silenceMs(): number {

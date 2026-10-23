@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ModeId } from '../../src/engine/modes';
 import type { Step } from '../../src/engine/modes/steps';
 import {
+  awaitsMine,
   initialState,
   orderSuggestion,
   reduce,
@@ -13,7 +14,7 @@ import {
 
 const lines = (...ids: string[]): Step[] => ids.map((id) => ({ kind: 'line', lineId: id as `L${string}` }));
 
-function run(mode: ModeId, steps: Step[], opts = { autoAdvance: true, echo: false }) {
+function run(mode: ModeId, steps: Step[], opts: Parameters<typeof initialState>[1] = { autoAdvance: true, echo: false }) {
   let state: SessionState = initialState(mode, opts);
   let effects: Effect[] = [];
   const d = (a: SessionAction) => {
@@ -88,6 +89,18 @@ describe('По репликам: Context → Cue → Prompt → Revealed → Gra
     m.d({ type: 'hint' });
     m.d({ type: 'reveal' });
     expect(m.d({ type: 'grade', rating: 'good', now: 1 })[0]).toMatchObject({ rating: 'good', hinted: true });
+  });
+
+  it('прогон с буквами: «Далее» пропускает звук, открывает реплику, затем ведёт дальше без оценки', () => {
+    const m = run('run', lines('L0001', 'L0002'));
+    expect(m.s.phase).toBe('context');
+    m.d({ type: 'next', now: 1 });
+    expect(m.s).toMatchObject({ phase: 'prompt', index: 0 });
+    m.d({ type: 'next', now: 2 });
+    expect(m.s).toMatchObject({ phase: 'revealed', index: 0 });
+    const eff = m.d({ type: 'next', now: 3 });
+    expect(m.s).toMatchObject({ phase: 'context', index: 1 });
+    expect(eff.some((e) => e.type === 'persistGrade')).toBe(false);
   });
 
   it('оценку нельзя поставить до «Показать»', () => {
@@ -210,6 +223,38 @@ describe('Аудиопрогон', () => {
     expect(m.s).toMatchObject({ index: 1, phase: 'context' });
     expect(m.d({ type: 'reveal' })).toEqual([]);
     expect(m.d({ type: 'grade', rating: 'good', now: 1 })).toEqual([]);
+  });
+
+  it('«Вся пьеса»: на своей реплике звук стоит до «Продолжить»', () => {
+    const m = run('audio', lines('L0001', 'L0002'), { autoAdvance: true, echo: false, waitOnMine: true });
+    m.endAudio();
+    m.endAudio();
+    expect(m.s).toMatchObject({ phase: 'prompt', audio: null });
+    expect(m.e.some((e) => e.type === 'play')).toBe(false);
+    expect(awaitsMine(m.s)).toBe(true);
+    m.d({ type: 'proceed', now: 1 });
+    expect(m.s).toMatchObject({ index: 1, phase: 'context' });
+    expect(m.d({ type: 'proceed', now: 2 })).toEqual([]);
+  });
+
+  it('«Вся пьеса» с эхом: «Продолжить» озвучивает свою реплику, потом идёт дальше', () => {
+    const m = run('audio', lines('L0001', 'L0002'), { autoAdvance: true, echo: true, waitOnMine: true });
+    m.endAudio();
+    m.endAudio();
+    m.d({ type: 'proceed', now: 1 });
+    expect(m.s).toMatchObject({ index: 0, phase: 'revealed', audio: 'echo' });
+    expect(m.e).toContainEqual({ type: 'play', phase: 'echo', token: m.s.token });
+    m.endAudio();
+    expect(m.s).toMatchObject({ index: 1, phase: 'context' });
+  });
+
+  it('вариант аудиопрогона переключается на лету', () => {
+    const m = run('audio', lines('L0001'));
+    m.d({ type: 'setOptions', waitOnMine: true });
+    m.endAudio();
+    m.endAudio();
+    expect(awaitsMine(m.s)).toBe(true);
+    expect(awaitsMine(run('cue', lines('L0001')).s)).toBe(false);
   });
 
   it('без эха сразу следующая; «Далее» всегда переходит к следующей', () => {

@@ -1,6 +1,6 @@
 // Настройки в localStorage: читаются синхронно до первого рендера, чтобы тема не мигала (раздел 8.2).
 // public/theme-init.js читает те же ключи `theme` и `fontSize` до загрузки бандла.
-import type { CueLength, DirectionsMode } from '../engine/audio-plan';
+import type { AudioRunSpan, CueLength, DirectionsMode } from '../engine/audio-plan';
 
 export const SETTINGS_KEY = 'tl.settings';
 
@@ -24,6 +24,8 @@ export interface Settings {
   echo: boolean;
   skipScenesWithoutRole: boolean;
   audioRunK: number;
+  /** Аудиопрогон: подсказка и тишина / вся пьеса с остановкой на своей реплике */
+  audioRun: AudioRunSpan;
   /** Дата премьеры YYYY-MM-DD: интервалы FSRS ограничиваются ею */
   premiere: string | null;
   lastRoles: string | null;
@@ -45,6 +47,7 @@ export const DEFAULT_SETTINGS: Settings = {
   echo: false,
   skipScenesWithoutRole: true,
   audioRunK: 1.2,
+  audioRun: 'cue',
   premiere: null,
   lastRoles: null,
   lastBackupAt: null,
@@ -79,6 +82,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     echo: bool(r.echo, d.echo),
     skipScenesWithoutRole: bool(r.skipScenesWithoutRole, d.skipScenesWithoutRole),
     audioRunK: Math.round(clamp(r.audioRunK, 0.8, 2, d.audioRunK) * 10) / 10,
+    audioRun: oneOf(r.audioRun, ['cue', 'play'] as const, d.audioRun),
     premiere: typeof r.premiere === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.premiere) ? r.premiere : null,
     lastRoles: typeof r.lastRoles === 'string' && r.lastRoles ? r.lastRoles : null,
     lastBackupAt: typeof r.lastBackupAt === 'number' ? r.lastBackupAt : null,

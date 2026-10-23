@@ -1,13 +1,13 @@
 // Экран тренировки (раздел 6.3): контекст и подсказка партнёра сверху, своя реплика, действия — в зоне большого пальца.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { cuePlan } from '../../engine/audio-plan';
+import { stepPlan, type AudioRunSpan } from '../../engine/audio-plan';
 import { isModeId, MODES, TRAIN_MODES, type ModeId } from '../../engine/modes';
 import { linePieces } from '../../engine/modes/render';
 import type { Step } from '../../engine/modes/steps';
 import { speechText } from '../../engine/play-format';
 import { formatScope, getLine, parseRoles, parseScope, roleNames, scopeLabel, type PlayIndex, type Scope } from '../../engine/queries';
-import { currentStep, orderSuggestion, type SessionState } from '../../engine/session-machine';
+import { awaitsMine, currentStep, orderSuggestion, type SessionState } from '../../engine/session-machine';
 import { GRADE_LABEL, type Grade3 } from '../../engine/srs';
 import { VANISH_LEVELS, wordDiff } from '../../engine/text-transforms';
 import type { Line } from '../../engine/types';
@@ -15,7 +15,7 @@ import { clearMediaSession, setPlaybackState, updateMediaSession } from '../../a
 import { useHotkeys, useLiveQuery, useSwipe, useWakeLock } from '../../app/hooks';
 import { repo } from '../../app/services';
 import { BASE_URL, useApp, usePlayback, useSettings } from '../../app/store';
-import { Icon, plural, Sheet, TopBar } from '../../app/ui';
+import { Icon, plural, Segmented, Sheet, Switch, TopBar } from '../../app/ui';
 import { formatSpeed, SPEEDS, VoiceSettings } from '../settings/VoiceSettings';
 import { ContextItem, Pieces } from './LineText';
 import { useRunnerState, useSession } from './useSession';
@@ -82,9 +82,12 @@ function Session({ index, roles, scope, urlMode }: { index: PlayIndex; roles: st
       replay: () => dispatch({ type: 'replayCue' }),
       tapCue: () => dispatch({ type: 'tapCue' }),
       pause: () => dispatch({ type: 'togglePause' }),
+      proceed: () => dispatch({ type: 'proceed', now: now() }),
     }),
     [dispatch],
   );
+  // Главная кнопка, пробел и гарнитура: в аудиопрогоне — пауза или «Продолжить» после своей реплики
+  const toggle = mode !== 'audio' ? act.reveal : awaitsMine(state) ? act.proceed : act.pause;
 
   const switchMode = useCallback(
     (m: ModeId) => {
@@ -99,19 +102,18 @@ function Session({ index, roles, scope, urlMode }: { index: PlayIndex; roles: st
   const speakerName = unit ? (unit.speakerId === 'narrator' ? 'Ремарка' : (index.characters.get(unit.speakerId)?.name ?? '')) : roleNames(index, roles);
   useEffect(() => {
     if (!active) return;
-    const toggle = mode === 'audio' ? act.pause : act.reveal;
     updateMediaSession(
       { title: speakerName, artist: sceneRef ? `Д.${sceneRef.act.n} · ${sceneRef.scene.title}` : '', album: index.play.title },
       { play: toggle, pause: toggle, next: act.next, previous: act.back },
       BASE_URL,
     );
     setPlaybackState(state.audio && !state.paused ? 'playing' : 'paused');
-  }, [active, mode, act, speakerName, sceneRef, index, state.audio, state.paused]);
+  }, [active, toggle, act, speakerName, sceneRef, index, state.audio, state.paused]);
 
   const graded = def.graded && mode !== 'audio';
   useHotkeys(
     {
-      Space: mode === 'audio' ? act.pause : act.reveal,
+      Space: toggle,
       '1': () => graded && act.grade('again'),
       '2': () => graded && act.grade('hard'),
       '3': () => graded && act.grade('good'),
@@ -163,11 +165,20 @@ function Session({ index, roles, scope, urlMode }: { index: PlayIndex; roles: st
             Готовим реплики…
           </div>
         ) : !started ? (
-          <StartGate index={index} mode={mode} steps={session.steps} scope={scope} onStart={session.start} onModes={() => setSheet('modes')} overviewUrl={overviewUrl} />
+          <StartGate
+            index={index}
+            mode={mode}
+            steps={session.steps}
+            scope={scope}
+            onStart={session.start}
+            onModes={() => setSheet('modes')}
+            onAudioRun={session.setAudioRun}
+            overviewUrl={overviewUrl}
+          />
         ) : state.phase === 'done' ? (
           <Done mode={mode} startedAt={session.startedAt} total={state.steps.length} onRestart={() => runner.start(state.steps)} overviewUrl={overviewUrl} onModes={() => setSheet('modes')} />
         ) : mode === 'audio' ? (
-          <AudioStage index={index} state={state} speakerName={unit ? speakerName : null} onToggle={act.pause} />
+          <AudioStage index={index} state={state} speakerName={unit ? speakerName : null} onToggle={toggle} onAudioRun={session.setAudioRun} />
         ) : step && line ? (
           <StepView
             index={index}
@@ -176,7 +187,7 @@ function Session({ index, roles, scope, urlMode }: { index: PlayIndex; roles: st
             step={step}
             line={line}
             onReplay={act.replay}
-            onTapLine={mode === 'letters' ? act.reveal : act.tapCue}
+            onTapLine={mode === 'letters' || mode === 'run' ? act.reveal : act.tapCue}
             onPick={(pieceId) => dispatch({ type: 'orderPick', pieceId })}
             onType={(text) => dispatch({ type: 'typeInput', text })}
           />
@@ -216,6 +227,7 @@ function StartGate({
   scope,
   onStart,
   onModes,
+  onAudioRun,
   overviewUrl,
 }: {
   index: PlayIndex;
@@ -224,6 +236,7 @@ function StartGate({
   scope: Scope;
   onStart: () => void;
   onModes: () => void;
+  onAudioRun: (v: AudioRunSpan) => void;
   overviewUrl: string;
 }) {
   const def = MODES[mode];
@@ -269,7 +282,40 @@ function StartGate({
       <button className="btn btn--ghost btn--small" type="button" onClick={onModes}>
         Сменить режим
       </button>
+      {mode === 'audio' && <AudioRunSetting onChange={onAudioRun} />}
       {mode === 'audio' && <p className="small muted">Наушники: пауза — «Показать/пауза», следующий трек — «Далее», предыдущий — «Назад».</p>}
+    </div>
+  );
+}
+
+function AudioRunSetting({ onChange }: { onChange: (v: AudioRunSpan) => void }) {
+  const value = useSettings((s) => s.audioRun);
+  const skipScenes = useSettings((s) => s.skipScenesWithoutRole);
+  const update = useSettings((s) => s.update);
+  return (
+    <div style={{ width: '100%', maxWidth: 520, textAlign: 'left' }}>
+      <Segmented<AudioRunSpan>
+        label="Что звучит"
+        value={value}
+        onChange={onChange}
+        options={[
+          { value: 'cue', label: 'Подсказка → моя реплика' },
+          { value: 'play', label: 'Вся пьеса' },
+        ]}
+        hint={
+          value === 'cue'
+            ? 'Звучит подсказка партнёра, на вашей реплике — пауза, затем прогон идёт дальше сам.'
+            : 'Звучат все реплики подряд. На вашей реплике звук останавливается: скажите её и нажмите «Продолжить».'
+        }
+      />
+      {value === 'play' && (
+        <Switch
+          label="Пропускать сцены без моей роли"
+          hint={skipScenes ? 'Звучат только сцены, где вы заняты' : 'Звучит вся пьеса с начала диапазона'}
+          checked={skipScenes}
+          onChange={(v) => update({ skipScenesWithoutRole: v })}
+        />
+      )}
     </div>
   );
 }
@@ -338,8 +384,8 @@ function StepView({
   const revealed = state.phase === 'revealed';
   const showAsides = settings.directions !== 'skip';
   const plan = useMemo(
-    () => (step.kind === 'order' || (step.kind === 'chunk' && step.part > 1) ? null : cuePlan(index, line.id, roles, settings)),
-    [index, line.id, roles, settings, step],
+    () => (step.kind === 'order' || (step.kind === 'chunk' && step.part > 1) ? null : stepPlan(mode, index, line.id, roles, settings)),
+    [mode, index, line.id, roles, settings, step],
   );
   const name = index.characters.get(line.speakerId)?.name ?? '';
   const sentenceIdx = step.kind === 'chunk' ? step.sentenceIdx : undefined;
@@ -347,6 +393,17 @@ function StepView({
   const pieces = linePieces(line, { mode, revealed, hints: state.hints, vanishLevel, showAsides, ...(sentenceIdx ? { sentenceIdx } : {}) });
   const fullText = sentenceIdx ? sentenceIdx.map((i) => line.sentences[i]?.text ?? '').join(' ') : speechText(line);
   const hiddenWords = pieces.filter((p) => p.kind === 'blank' || p.kind === 'letters').length;
+
+  // Лента сцены: в поле зрения то, что звучит, а когда очередь дошла до вас — своя реплика
+  const mineRef = useRef<HTMLDivElement>(null);
+  const speakingId = unit?.itemId;
+  const yourTurn = state.phase === 'prompt' || state.phase === 'revealed';
+  useEffect(() => {
+    if (mode !== 'run') return;
+    const el = speakingId ? document.querySelector(`[data-item="${speakingId}"]`) : yourTurn ? mineRef.current : null;
+    const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    el?.scrollIntoView?.({ block: 'center', behavior: smooth ? 'smooth' : 'auto' });
+  }, [mode, speakingId, yourTurn, line.id]);
 
   return (
     <div>
@@ -382,7 +439,7 @@ function StepView({
               {...(it.id === plan.cueLine?.id ? { onReplay } : {})}
             />
           ))}
-          <div className={`item item--mine${unit?.itemId === line.id ? ' item--speaking' : ''}`}>
+          <div ref={mineRef} className={`item item--mine${unit?.itemId === line.id ? ' item--speaking' : ''}`} data-item={line.id}>
             <div className="item__head">
               <span>{name} · вы</span>
               {line.continuation && <span className="chip">после ремарки</span>}
@@ -509,11 +566,26 @@ function OrderPuzzle({ state, step, onPick }: { state: SessionState; step: Extra
   );
 }
 
-function AudioStage({ index, state, speakerName, onToggle }: { index: PlayIndex; state: SessionState; speakerName: string | null; onToggle: () => void }) {
+function AudioStage({
+  index,
+  state,
+  speakerName,
+  onToggle,
+  onAudioRun,
+}: {
+  index: PlayIndex;
+  state: SessionState;
+  speakerName: string | null;
+  onToggle: () => void;
+  onAudioRun: (v: AudioRunSpan) => void;
+}) {
   const step = currentStep(state);
   const line = step ? getLine(index, step.lineId) : undefined;
-  const status =
-    state.audio === 'silence'
+  const waiting = awaitsMine(state);
+  const mineNow = waiting || state.audio === 'silence' || state.audio === 'echo';
+  const status = waiting
+    ? 'Ваша реплика — говорите, затем «Продолжить»'
+    : state.audio === 'silence'
       ? 'Ваша реплика — говорите'
       : state.audio === 'echo'
         ? 'Эхо: ваша реплика'
@@ -530,15 +602,16 @@ function AudioStage({ index, state, speakerName, onToggle }: { index: PlayIndex;
       </div>
       {!state.paused && state.audio && <span className="pulse" aria-hidden="true" />}
       <div className="audio-stage__who" aria-live="polite">
-        {state.audio === 'silence' || state.audio === 'echo' ? (line ? (index.characters.get(line.speakerId)?.name ?? '') : '') : (speakerName ?? '')}
+        {mineNow ? (line ? (index.characters.get(line.speakerId)?.name ?? '') : '') : (speakerName ?? '')}
       </div>
       <div className="audio-stage__state" aria-live="polite">
         {state.paused ? 'Пауза' : status}
       </div>
-      <button className="btn btn--primary big-play" type="button" onClick={onToggle} aria-label={state.paused ? 'Продолжить' : 'Пауза'}>
-        <Icon name={state.paused ? 'play' : 'pause'} />
+      <button className="btn btn--primary big-play" type="button" onClick={onToggle} aria-label={state.paused || waiting ? 'Продолжить' : 'Пауза'}>
+        <Icon name={state.paused || waiting ? 'play' : 'pause'} />
       </button>
       <p className="small muted">Можно заблокировать экран — управление с гарнитуры и экрана блокировки.</p>
+      <AudioRunSetting onChange={onAudioRun} />
     </div>
   );
 }
@@ -604,7 +677,7 @@ function ActionBar({
               Суфлёр
             </button>
             <button className="btn btn--primary" type="button" onClick={act.reveal} aria-label={`${mode === 'type' ? 'Проверить' : 'Показать'} (пробел)`}>
-              {mode === 'type' ? 'Проверить' : mode === 'letters' ? 'Открыть' : 'Показать'}
+              {mode === 'type' ? 'Проверить' : mode === 'letters' || mode === 'run' ? 'Открыть' : 'Показать'}
             </button>
           </div>
         )}

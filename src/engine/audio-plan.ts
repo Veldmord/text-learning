@@ -1,5 +1,6 @@
 // Что звучит: контекст, подсказка партнёра (полностью, последнее предложение, последние N слов), ремарки, «эхо».
 // Аудиодвижок получает готовую очередь и ничего не знает о режимах (раздел 7.2).
+import type { ModeId } from './modes';
 import { cueFor, type PlayIndex } from './queries';
 import { lastWords, words as wordsOf } from './text-transforms';
 import type { Direction, Item, ItemId, Line } from './types';
@@ -8,6 +9,8 @@ export const NARRATOR = 'narrator';
 
 export type CueLength = 'full' | 'lastSentence' | 'lastWords' | 'textOnly';
 export type DirectionsMode = 'skip' | 'text' | 'voice';
+/** Аудиопрогон: подсказка и тишина на своей реплике / вся пьеса подряд с остановкой на своей реплике */
+export type AudioRunSpan = 'cue' | 'play';
 
 export interface PlanSettings {
   cueLength: CueLength;
@@ -116,6 +119,65 @@ export function cuePlan(index: PlayIndex, lineId: string, roles: string[], s: Pl
   });
   return { context, cue: cueUnits, visible, cueLine: cue };
 }
+
+/**
+ * План «Прогона с буквами»: на экране — сцена с начала до моей реплики (свои прошлые реплики открыты),
+ * звучит целиком всё, что сказано после моей предыдущей реплики. Подсказка — последняя чужая реплика перед моей.
+ * «Контекст» и «Длина подсказки» здесь не действуют; «только текст» — без звука.
+ */
+export function scenePlan(index: PlayIndex, lineId: string, roles: string[], s: PlanSettings): CuePlan {
+  const ids = index.sceneOfItem.get(lineId)?.scene.itemIds ?? [];
+  const before = ids
+    .slice(0, Math.max(0, ids.indexOf(lineId as ItemId)))
+    .map((id) => index.byId.get(id))
+    .filter((it): it is Item => !!it);
+  const visible = before.filter((it) => it.kind === 'line' || s.directions !== 'skip');
+  let from = before.length;
+  while (from > 0 && !isMineItem(before[from - 1]!, roles)) from--;
+  return { ...spanUnits(before.slice(from), s), visible };
+}
+
+export interface PlaySpan {
+  /** Элементы диапазона тренировки: дальше них назад не идём */
+  inScope: ReadonlySet<string>;
+  skipScenesWithoutRole: boolean;
+}
+
+/**
+ * Аудиопрогон «Вся пьеса»: звучит всё, что сказано после моей предыдущей реплики, через границы сцен и действий,
+ * но не раньше начала диапазона. Сцены без моей роли пропускаются по настройке. Своих реплик в плане нет — на них прогон ждёт.
+ */
+export function playPlan(index: PlayIndex, lineId: string, roles: string[], s: PlanSettings, o: PlaySpan): CuePlan {
+  const span: Item[] = [];
+  for (let i = (index.pos.get(lineId) ?? 0) - 1; i >= 0; i--) {
+    const it = index.play.items[i]!;
+    if (!o.inScope.has(it.id) || isMineItem(it, roles)) break;
+    const scene = index.sceneOfItem.get(it.id)?.scene;
+    if (o.skipScenesWithoutRole && scene && !scene.characterIds.some((c) => roles.includes(c))) continue;
+    span.unshift(it);
+  }
+  return { ...spanUnits(span, s), visible: span.filter((it) => it.kind === 'line' || s.directions !== 'skip') };
+}
+
+/** Озвучка отрезка между своими репликами целиком: до последней чужой реплики — контекст, с неё — подсказка. */
+function spanUnits(span: Item[], s: PlanSettings): Omit<CuePlan, 'visible'> {
+  const cueLine = [...span].reverse().find((it): it is Line => it.kind === 'line') ?? null;
+  if (s.cueLength === 'textOnly') return { context: [], cue: [], cueLine };
+  const context: SpeechUnit[] = [];
+  const cue: SpeechUnit[] = [];
+  const cueAt = cueLine ? span.indexOf(cueLine) : span.length;
+  span.forEach((it, i) => {
+    const units = it.kind === 'line' ? lineUnits(it) : s.directions === 'voice' ? directionUnits(it) : [];
+    (i >= cueAt ? cue : context).push(...endWithPause(units, s.pauseMs));
+  });
+  return { context, cue, cueLine };
+}
+
+const isMineItem = (it: Item, roles: string[]) => it.kind === 'line' && roles.includes(it.speakerId);
+
+/** Что видно и звучит перед шагом: в «Прогоне с буквами» — сцена, в остальных режимах — подсказка с контекстом. */
+export const stepPlan = (mode: ModeId, index: PlayIndex, lineId: string, roles: string[], s: PlanSettings): CuePlan =>
+  (mode === 'run' ? scenePlan : cuePlan)(index, lineId, roles, s);
 
 /** Озвучка своей реплики после «Показать» («эхо») или в читке. */
 export function echoUnits(line: Line, sentenceIdx?: number[]): SpeechUnit[] {

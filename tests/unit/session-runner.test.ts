@@ -84,10 +84,12 @@ const settings: RunnerSettings = {
   autoAdvance: true,
   echo: false,
   audioRunK: 1.5,
+  audioRun: 'cue',
+  skipScenesWithoutRole: true,
   premiere: null,
 };
 
-function setup(mode: 'cue' | 'audio' | 'chunks' | 'letters' = 'cue', over: Partial<RunnerSettings> = {}) {
+function setup(mode: 'cue' | 'audio' | 'chunks' | 'letters' = 'cue', over: Partial<RunnerSettings> = {}, scopeKey = 'all') {
   const { index } = miniPlay();
   const audio = new FakeAudio();
   const store = new MemoryStore();
@@ -98,7 +100,7 @@ function setup(mode: 'cue' | 'audio' | 'chunks' | 'letters' = 'cue', over: Parti
     {
       index,
       roles: ['a'],
-      scopeKey: 'all',
+      scopeKey,
       audio,
       store,
       settings: () => ({ ...settings, ...over }),
@@ -109,7 +111,7 @@ function setup(mode: 'cue' | 'audio' | 'chunks' | 'letters' = 'cue', over: Parti
     },
     mode,
   );
-  const steps = buildSteps({ index, mode, roles: ['a'], scope: parseScope(''), cards: new Map(), now: t });
+  const steps = buildSteps({ index, mode, roles: ['a'], scope: parseScope(scopeKey), cards: new Map(), now: t });
   return { index, audio, store, runner, steps, errors, graded: () => graded };
 }
 
@@ -177,6 +179,40 @@ describe('SessionRunner', () => {
     expect(audio.silences[0]).toBe(Math.round(l1.sentences.length * (1000 + 150) * 1.5));
     await audio.finish();
     expect(runner.getState().index).toBe(1);
+  });
+
+  it('аудиопрогон «Вся пьеса»: всё после своей прошлой реплики, стоп на своей до «Продолжить»', async () => {
+    const { audio, runner, steps } = setup('audio', { audioRun: 'play', skipScenesWithoutRole: false });
+    runner.start(steps, 'L0007');
+    expect(audio.played.at(-1)?.map((u) => u.itemId)).toEqual(['L0005']);
+    await audio.finish();
+    expect(audio.played.at(-1)?.map((u) => u.itemId)).toEqual(['L0006']);
+    await audio.finish();
+    expect(runner.getState()).toMatchObject({ index: 2, phase: 'prompt', audio: null });
+    expect(audio.silences).toEqual([]);
+    runner.dispatch({ type: 'proceed', now: 0 });
+    expect(runner.currentLine()?.id).toBe('L0009');
+  });
+
+  it('аудиопрогон «Вся пьеса»: сцены без роли пропускаются, диапазон не покидается', async () => {
+    const skip = setup('audio', { audioRun: 'play' });
+    skip.runner.start(skip.steps, 'L0007');
+    await skip.audio.finish();
+    expect(skip.audio.played.flat().map((u) => u.itemId)).toEqual(['L0006']);
+
+    const act2 = setup('audio', { audioRun: 'play', skipScenesWithoutRole: false }, 'a2');
+    act2.runner.start(act2.steps);
+    await act2.audio.finish();
+    expect(act2.audio.played.flat().map((u) => u.itemId)).toEqual(['L0006']);
+  });
+
+  it('смена варианта аудиопрогона начинает текущую реплику заново', async () => {
+    const { audio, runner, steps } = setup('audio');
+    runner.start(steps, 'L0004');
+    const before = audio.played.length;
+    runner.restartStep();
+    expect(runner.getState()).toMatchObject({ index: 1, phase: 'context' });
+    expect(audio.played.length).toBe(before + 1);
   });
 
   it('пауза, которой нечего продолжать, завершает фрагмент', async () => {

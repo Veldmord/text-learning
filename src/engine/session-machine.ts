@@ -31,6 +31,8 @@ export interface SessionState {
   paused: boolean;
   autoAdvance: boolean;
   echo: boolean;
+  /** Аудиопрогон «Вся пьеса»: на своей реплике звук останавливается до «Продолжить» */
+  waitOnMine: boolean;
   /** Номер попытки текущего шага (растёт при повторе после «Не знал») */
   attempt: number;
   /** Защита от устаревших событий аудио: растёт при каждом переходе */
@@ -53,7 +55,8 @@ export type SessionAction =
   | { type: 'orderPick'; pieceId: string }
   | { type: 'typeInput'; text: string }
   | { type: 'togglePause' }
-  | { type: 'setOptions'; autoAdvance?: boolean; echo?: boolean }
+  | { type: 'proceed'; now: number }
+  | { type: 'setOptions'; autoAdvance?: boolean; echo?: boolean; waitOnMine?: boolean }
   | { type: 'replayCue' };
 
 export type Effect =
@@ -78,7 +81,7 @@ export type Transition = [SessionState, Effect[]];
 
 const emptyOrder = (): OrderState => ({ placed: [], mistakes: 0, wrong: null, gaveUp: false });
 
-export function initialState(mode: ModeId, opts: { autoAdvance: boolean; echo: boolean }): SessionState {
+export function initialState(mode: ModeId, opts: { autoAdvance: boolean; echo: boolean; waitOnMine?: boolean }): SessionState {
   return {
     mode,
     steps: [],
@@ -93,6 +96,7 @@ export function initialState(mode: ModeId, opts: { autoAdvance: boolean; echo: b
     paused: false,
     autoAdvance: opts.autoAdvance,
     echo: opts.echo,
+    waitOnMine: opts.waitOnMine ?? false,
     attempt: 0,
     token: 0,
     audio: null,
@@ -100,6 +104,9 @@ export function initialState(mode: ModeId, opts: { autoAdvance: boolean; echo: b
 }
 
 export const currentStep = (s: SessionState): Step | undefined => s.steps[s.index];
+
+/** Аудиопрогон остановился на своей реплике и ждёт «Продолжить». */
+export const awaitsMine = (s: SessionState): boolean => s.mode === 'audio' && s.phase === 'prompt' && s.audio === null;
 
 /** Звучит ли подсказка перед шагом: в монологе — только перед первой частью. */
 export function stepPlaysCue(mode: ModeId, step: Step | undefined): boolean {
@@ -139,10 +146,10 @@ function enterStep(s: SessionState, index: number, now: number, attempt = 0): Tr
   return [next, effects];
 }
 
-/** Переход к своей реплике. В аудиопрогоне на ней звучит тишина длиной ≈ реплика × k. */
+/** Переход к своей реплике. В аудиопрогоне на ней звучит тишина длиной ≈ реплика × k или прогон ждёт «Продолжить». */
 function enterPrompt(s: SessionState, effects: Effect[] = []): Transition {
   const token = s.token + 1;
-  if (s.mode === 'audio') {
+  if (s.mode === 'audio' && !s.waitOnMine) {
     return [{ ...s, phase: 'prompt', cueDone: true, token, audio: 'silence' }, [...effects, { type: 'play', phase: 'silence', token }]];
   }
   return [{ ...s, phase: 'prompt', cueDone: true, token, audio: null }, effects];
@@ -167,7 +174,7 @@ export function reduce(s: SessionState, a: SessionAction): Transition {
       return enterStep({ ...s, mode: a.mode, steps: a.steps, graded: {} }, Math.min(Math.max(a.index, 0), a.steps.length), a.now);
 
     case 'setOptions':
-      return [{ ...s, autoAdvance: a.autoAdvance ?? s.autoAdvance, echo: a.echo ?? s.echo }, []];
+      return [{ ...s, autoAdvance: a.autoAdvance ?? s.autoAdvance, echo: a.echo ?? s.echo, waitOnMine: a.waitOnMine ?? s.waitOnMine }, []];
 
     case 'audioEnded': {
       if (a.token !== s.token || s.paused) return [s, []];
@@ -262,6 +269,8 @@ export function reduce(s: SessionState, a: SessionAction): Transition {
     case 'next': {
       if (s.phase === 'done') return [s, []];
       if (s.mode !== 'audio' && (s.phase === 'context' || s.phase === 'cue')) return enterPrompt(s, [{ type: 'stopAudio' }]);
+      // В «Прогоне с буквами» «Далее» сначала открывает свою реплику, затем ведёт сцену дальше
+      if (s.mode === 'run' && s.phase === 'prompt') return enterRevealed(s);
       return enterStep(s, s.index + 1, a.now);
     }
 
@@ -297,6 +306,13 @@ export function reduce(s: SessionState, a: SessionAction): Transition {
     case 'typeInput':
       if (s.phase === 'done' || s.phase === 'revealed') return [s, []];
       return [{ ...s, typed: a.text, ...(s.phase !== 'prompt' ? { phase: 'prompt' as const, audio: null, token: s.token + 1 } : {}) }, s.phase !== 'prompt' ? [{ type: 'stopAudio' }] : []];
+
+    case 'proceed': {
+      if (!awaitsMine(s)) return [s, []];
+      if (!s.echo) return enterStep(s, s.index + 1, a.now);
+      const token = s.token + 1;
+      return [{ ...s, phase: 'revealed', token, audio: 'echo' }, [{ type: 'play', phase: 'echo', token }]];
+    }
 
     case 'togglePause':
       if (s.phase === 'done') return [s, []];

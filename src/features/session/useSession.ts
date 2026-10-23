@@ -1,5 +1,6 @@
 // Связка SessionRunner с React: создание, загрузка шагов и курсора, снимок состояния, настройки.
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import type { AudioRunSpan } from '../../engine/audio-plan';
 import type { ModeId } from '../../engine/modes';
 import { buildSteps, type Step } from '../../engine/modes/steps';
 import { cursorKey } from '../../engine/model';
@@ -19,6 +20,8 @@ const runnerSettings = (): RunnerSettings => {
     autoAdvance: s.autoAdvance,
     echo: s.echo,
     audioRunK: s.audioRunK,
+    audioRun: s.audioRun,
+    skipScenesWithoutRole: s.skipScenesWithoutRole,
     premiere: s.premiere,
   };
 };
@@ -31,6 +34,8 @@ export interface SessionHandle {
   started: boolean;
   start: () => void;
   switchMode: (mode: ModeId) => Promise<void>;
+  /** Вариант аудиопрогона меняется прямо в режиме: текущая реплика начинается заново */
+  setAudioRun: (audioRun: AudioRunSpan) => void;
   steps: Step[];
   startedAt: number;
   /** Текущий режим (до старта — выбранный, после — режим раннера) */
@@ -113,14 +118,24 @@ export function useSession(index: PlayIndex, roles: string[], scope: Scope, scop
     [index, roles, scope, key, scopeKey, runner, started],
   );
 
-  // Автопереход и «эхо» применяются сразу, без перезапуска сессии
+  // Автопереход, «эхо» и остановка на своей реплике применяются сразу, без перезапуска сессии
   const autoAdvance = useSettings((s) => s.autoAdvance);
   const echo = useSettings((s) => s.echo);
+  const waitOnMine = useSettings((s) => s.audioRun === 'play');
   useEffect(() => {
-    runner.dispatch({ type: 'setOptions', autoAdvance, echo });
-  }, [runner, autoAdvance, echo]);
+    runner.dispatch({ type: 'setOptions', autoAdvance, echo, waitOnMine });
+  }, [runner, autoAdvance, echo, waitOnMine]);
 
-  return { runner, ready, started, start, switchMode, steps, startedAt, mode };
+  const setAudioRun = useCallback(
+    (audioRun: AudioRunSpan) => {
+      useSettings.getState().update({ audioRun });
+      runner.dispatch({ type: 'setOptions', waitOnMine: audioRun === 'play' });
+      if (started) runner.restartStep();
+    },
+    [runner, started],
+  );
+
+  return { runner, ready, started, start, switchMode, setAudioRun, steps, startedAt, mode };
 }
 
 export function useRunnerState(runner: SessionRunner) {

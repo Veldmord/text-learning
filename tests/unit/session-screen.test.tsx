@@ -93,6 +93,24 @@ describe('экран сессии', () => {
     await screen.findByText('1 / 4');
   });
 
+  it('прогон с буквами: сцена сверху вниз, свои реплики первыми буквами', async () => {
+    const { container } = renderSession('/r/a/train/run');
+    await start();
+    const mine = () => container.querySelector('.mine-line')!;
+    expect(screen.getByText('Комната. Анна у окна.')).toBeTruthy();
+    expect(mine().querySelector('.letters')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Показать (пробел)' }));
+    await waitFor(() => expect(mine().textContent).toContain('Ты пришёл? Я ждала.'));
+    fireEvent.click(screen.getByRole('button', { name: 'Далее (→)' }));
+    await screen.findByText('2 / 4');
+    // Прошлая своя реплика открыта, партнёры видны с начала сцены, текущая — первыми буквами
+    expect(screen.getByText('Комната. Анна у окна.')).toBeTruthy();
+    expect(screen.getByText('Ты пришёл? Я ждала.')).toBeTruthy();
+    expect(screen.getByText('Очень устал.')).toBeTruthy();
+    expect(mine().querySelector('.letters')).toBeTruthy();
+    expect(mine().textContent).not.toContain('Отдохни');
+  });
+
   it('пустой диапазон — понятное сообщение вместо тренировки', async () => {
     renderSession('/r/a/train/chunks');
     expect(await screen.findByText('В этом диапазоне нет реплик длиннее 40 слов.')).toBeTruthy();

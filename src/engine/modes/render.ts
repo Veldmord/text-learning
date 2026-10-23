@@ -45,7 +45,7 @@ export function linePieces(line: Line, o: RenderOptions): Piece[] {
   let hintsLeft = o.hints;
   const stateOf = (i: number): WordState => {
     if (o.revealed) return 'visible';
-    if (o.mode === 'letters') return 'letters';
+    if (o.mode === 'letters' || o.mode === 'run') return 'letters';
     if (vanish) return vanish[i] ? 'hidden' : 'visible';
     return 'hidden';
   };

@@ -7,8 +7,11 @@ import {
   lineDurationMs,
   lineUnits,
   NARRATOR,
+  playPlan,
   readThroughUnits,
+  scenePlan,
   SENTENCE_GAP_MS,
+  stepPlan,
   type PlanSettings,
 } from '../../src/engine/audio-plan';
 import { getLine } from '../../src/engine/queries';
@@ -75,6 +78,73 @@ describe('план подсказки', () => {
     const p = cuePlan(index, 'L0005', ['c'], { ...settings, cueLength: 'lastSentence', context: 2 });
     expect(p.cue.map((u) => u.sentenceId)).toEqual(['S0004.2']);
     expect(p.context.map((u) => u.sentenceId)).toEqual(['S0003.1']);
+  });
+});
+
+describe('план прогона с буквами', () => {
+  const { index } = miniPlay();
+
+  it('видна сцена с начала, звучит целиком всё после моей прошлой реплики', () => {
+    const p = scenePlan(index, 'L0004', ['a'], { ...settings, cueLength: 'lastSentence', context: 0 });
+    expect(p.visible.map((i) => i.id)).toEqual(['D0001', 'L0001', 'L0002', 'D0002', 'L0003']);
+    expect(p.context.map((u) => u.sentenceId)).toEqual(['S0002.1', 'S0002.2']);
+    expect(p.cueLine?.id).toBe('L0003');
+    expect(p.cue.map((u) => u.sentenceId)).toEqual(['S0003.1']);
+    expect(p.cue[p.cue.length - 1]!.pauseAfterMs).toBe(300);
+  });
+
+  it('первая своя реплика — с начала сцены, не выходя за неё; ремарки по настройке', () => {
+    const p = scenePlan(index, 'L0007', ['a'], { ...settings, directions: 'voice' });
+    expect(p.visible.map((i) => i.id)).toEqual(['D0003', 'L0006']);
+    expect(p.context.map((u) => u.speakerId)).toEqual([NARRATOR]);
+    expect(p.cue.map((u) => u.sentenceId)).toEqual(['S0006.1']);
+    const first = scenePlan(index, 'L0001', ['a'], { ...settings, directions: 'voice' });
+    expect(first.cueLine).toBeNull();
+    expect(new Set(first.context.map((u) => u.itemId))).toEqual(new Set(['D0001']));
+    const skip = scenePlan(index, 'L0001', ['a'], { ...settings, directions: 'skip' });
+    expect(skip.visible).toEqual([]);
+    expect(skip.context).toEqual([]);
+  });
+
+  it('свои прошлые реплики видны, но не звучат; «только текст» — без звука', () => {
+    const p = scenePlan(index, 'L0009', ['a'], settings);
+    expect(p.visible.map((i) => i.id)).toEqual(['D0003', 'L0006', 'L0007', 'L0008']);
+    expect([...p.context, ...p.cue].map((u) => u.itemId)).toEqual(['L0008']);
+    const silent = scenePlan(index, 'L0009', ['a'], { ...settings, cueLength: 'textOnly' });
+    expect([...silent.context, ...silent.cue]).toEqual([]);
+    expect(silent.visible).toHaveLength(4);
+  });
+
+  it('план шага выбирается по режиму', () => {
+    expect(stepPlan('run', index, 'L0004', ['a'], settings)).toEqual(scenePlan(index, 'L0004', ['a'], settings));
+    expect(stepPlan('letters', index, 'L0004', ['a'], settings)).toEqual(cuePlan(index, 'L0004', ['a'], settings));
+  });
+});
+
+describe('план аудиопрогона по всей пьесе', () => {
+  const { index } = miniPlay();
+  const all = new Set(index.play.items.map((i) => i.id));
+
+  it('звучит всё после своей прошлой реплики, через границы сцен и действий', () => {
+    const p = playPlan(index, 'L0007', ['a'], { ...settings, directions: 'voice' }, { inScope: all, skipScenesWithoutRole: false });
+    expect(new Set(p.context.map((u) => u.itemId))).toEqual(new Set(['L0005', 'D0003']));
+    expect(p.cueLine?.id).toBe('L0006');
+    expect(p.cue.map((u) => u.sentenceId)).toEqual(['S0006.1']);
+  });
+
+  it('сцены без моей роли пропускаются по настройке', () => {
+    const p = playPlan(index, 'L0007', ['a'], settings, { inScope: all, skipScenesWithoutRole: true });
+    expect(p.visible.map((i) => i.id)).toEqual(['D0003', 'L0006']);
+    expect([...p.context, ...p.cue].map((u) => u.itemId)).toEqual(['L0006']);
+  });
+
+  it('не раньше начала диапазона; первая реплика пьесы — с самого начала', () => {
+    const act2 = new Set(index.play.acts[1]!.scenes.flatMap((s) => s.itemIds));
+    const p = playPlan(index, 'L0007', ['a'], settings, { inScope: act2, skipScenesWithoutRole: false });
+    expect(p.visible.map((i) => i.id)).toEqual(['D0003', 'L0006']);
+    const first = playPlan(index, 'L0001', ['a'], { ...settings, directions: 'voice' }, { inScope: all, skipScenesWithoutRole: true });
+    expect(first.visible.map((i) => i.id)).toEqual(['D0001']);
+    expect(first.cueLine).toBeNull();
   });
 });
 
