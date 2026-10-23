@@ -21,7 +21,8 @@ from .engines import Voice, make_engine
 
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(encoding="utf-8")  # консоль Windows по умолчанию не в UTF-8
+        # консоль Windows по умолчанию не в UTF-8; построчный вывод — чтобы прогресс сразу виден в логе CI
+        stream.reconfigure(encoding="utf-8", line_buffering=True)
     parser = argparse.ArgumentParser(prog="python -m tools.tts", description=__doc__)
     parser.add_argument("--cache", default=".tts-cache", help="каталог кэша клипов")
     parser.add_argument("--jobs", help="файл заданий (по умолчанию <cache>/jobs.json)")
