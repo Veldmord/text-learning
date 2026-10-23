@@ -7,16 +7,21 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import sys
 import tempfile
+import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from .audio import require_ffmpeg, to_mp3
 from .engines import Voice, make_engine
+
+#: Столько секунд без продвижения — значит, что-то зависло (с запасом на загрузку моделей)
+STALL_TIMEOUT = 300
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,24 +54,49 @@ def main(argv: list[str] | None = None) -> int:
     require_ffmpeg()
     started = time.monotonic()
     done = 0
-    with tempfile.TemporaryDirectory() as tmp, ThreadPoolExecutor(max_workers=4) as pool:
+    workers = 4
+    # ffmpeg медленнее синтеза: без ограничения очереди синтез уходит далеко вперёд, WAV копятся,
+    # а после последней фразы минуты идут молча. Поэтому в очереди не больше 2×workers клипов.
+    slots = threading.BoundedSemaphore(workers * 2)
+    errors: list[BaseException] = []
+
+    def on_done(future: Future) -> None:
+        if exc := future.exception():
+            errors.append(exc)
+        slots.release()
+
+    with tempfile.TemporaryDirectory() as tmp, ThreadPoolExecutor(max_workers=workers) as pool:
         futures = []
         for engine_name, engine_jobs in by_engine.items():
             engine = make_engine(engine_name)
             for j in engine_jobs:
+                watchdog()
                 voice = Voice(engine=engine_name, name=j["voice"], rate=float(j["rate"]))
                 wav = Path(tmp) / f"{j['key']}.wav"
                 wav.write_bytes(engine.synthesize(j["text"], voice))
                 tempo = 1.0 if engine.handles_rate else voice.rate
                 # ffmpeg работает параллельно с синтезом следующих фраз
-                futures.append(pool.submit(finish, wav, cache, j["key"], tempo, float(j.get("pitch", 0))))
+                slots.acquire()
+                if errors:
+                    raise errors[0]  # ошибку ffmpeg видно сразу, а не после синтеза всех фраз
+                future = pool.submit(finish, wav, cache, j["key"], tempo, float(j.get("pitch", 0)))
+                future.add_done_callback(on_done)
+                futures.append(future)
                 done += 1
                 if done % 50 == 0:
-                    print(f"  синтезировано {done}/{len(jobs)} за {time.monotonic() - started:.0f} с")
+                    print(f"  готово {done}/{len(jobs)} за {time.monotonic() - started:.0f} с")
         for f in futures:
+            watchdog()
             f.result()
+    faulthandler.cancel_dump_traceback_later()
     print(f"Готово: {done} клипов за {time.monotonic() - started:.0f} с")
     return 0
+
+
+def watchdog() -> None:
+    """Перезапускает сторожевой таймер: если за STALL_TIMEOUT с ни синтез, ни ffmpeg не продвинулись,
+    печатает стеки всех потоков и завершает процесс — вместо молчаливого ожидания до таймаута CI."""
+    faulthandler.dump_traceback_later(STALL_TIMEOUT, exit=True)
 
 
 def finish(wav: Path, cache: Path, key: str, tempo: float, pitch: float) -> None:

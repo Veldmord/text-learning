@@ -11,6 +11,8 @@ from pathlib import Path
 
 TRIM = "silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.05"
 LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
+#: Клип — одна фраза, ffmpeg обычно укладывается в доли секунды; зависший процесс — ошибка с командой в тексте
+TIMEOUT = 120
 
 
 def require_ffmpeg() -> None:
@@ -21,7 +23,9 @@ def require_ffmpeg() -> None:
 
 @lru_cache(maxsize=1)
 def has_rubberband() -> bool:
-    result = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-filters"], capture_output=True, text=True, check=False, timeout=TIMEOUT
+    )
     return " rubberband " in result.stdout
 
 
@@ -45,7 +49,8 @@ def to_mp3(wav: Path, mp3: Path, tempo: float = 1.0, pitch_semitones: float = 0)
     tmp = mp3.with_suffix(".tmp.mp3")
     subprocess.run(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            # -nostdin: параллельные ffmpeg не читают общий stdin в ожидании клавиш
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-i", str(wav),
             "-af", filter_chain(tempo, pitch_semitones),
             "-ac", "1", "-ar", "24000",
@@ -54,6 +59,7 @@ def to_mp3(wav: Path, mp3: Path, tempo: float = 1.0, pitch_semitones: float = 0)
             str(tmp),
         ],
         check=True,
+        timeout=TIMEOUT,
     )
     tmp.replace(mp3)
     return duration_ms(mp3)
@@ -65,5 +71,6 @@ def duration_ms(path: Path) -> int:
         capture_output=True,
         text=True,
         check=True,
+        timeout=TIMEOUT,
     )
     return round(float(json.loads(result.stdout)["format"]["duration"]) * 1000)

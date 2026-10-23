@@ -1,0 +1,12 @@
+import { buildPlay } from './build';
+import { computeCounts } from './validate';
+const { play, errors, parsed } = buildPlay();
+console.log('errors', errors);
+console.log(computeCounts(play.items));
+console.log({ title: parsed.title, author: parsed.author, subtitle: parsed.subtitle, cast: parsed.cast, preface: parsed.preface.length });
+const lines = play.items.filter((i) => i.kind === 'line');
+const sents = lines.reduce((n, l) => n + (l.kind === 'line' ? l.sentences.length : 0), 0);
+const chars = lines.reduce((n, l) => n + (l.kind === 'line' ? l.sentences.map((s) => s.text).join(' ').length : 0), 0);
+const dchars = play.items.reduce((n, l) => n + (l.kind === 'direction' ? l.text.length : 0), 0);
+console.log({ sents, chars, dchars, long: lines.filter((l) => l.kind === 'line' && l.words > 40).length, max: Math.max(...lines.map((l) => (l.kind === 'line' ? l.words : 0))) });
+console.log(play.items.slice(0, 12).map((i) => i.id + ' ' + (i.kind === 'line' ? i.speakerId + (i.continuation ? '+' : '') + ' ' + JSON.stringify(i.segments) : i.text.slice(0, 50))).join('\n'));

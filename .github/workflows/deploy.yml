@@ -29,15 +29,20 @@ jobs:
       - name: Разбор пьесы (content/*.txt → src/data/play.json)
         run: npm run parse -- --validate
 
+      # restore и save раздельно: кэш сохраняется и после падения синтеза, чтобы готовые клипы
+      # не синтезировать заново. Запись с существующим ключом не перезаписать — поэтому run_id в ключе.
       - name: Кэш TTS (клипы, веса Silero, голоса Piper)
-        uses: actions/cache@v4
+        id: tts-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             .tts-cache
             ~/.cache/torch/hub
             ~/.cache/piper-voices
-          key: tts-${{ hashFiles('content/**', 'tools/tts/**') }}
-          restore-keys: tts-
+          key: tts-${{ hashFiles('content/**', 'tools/tts/**') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            tts-${{ hashFiles('content/**', 'tools/tts/**') }}-
+            tts-
 
       - name: План озвучки (без Python)
         id: plan
@@ -48,11 +53,22 @@ jobs:
         with: { python-version: '3.12', cache: pip, cache-dependency-path: tools/tts/requirements.txt }
       - if: steps.plan.outputs.missing != '0'
         name: Синтез недостающих клипов
+        # меньше таймаута job: при превышении падает только шаг, и кэш ниже успевает сохраниться
+        timeout-minutes: 25
         run: |
           command -v ffmpeg >/dev/null || (sudo apt-get update && sudo apt-get install -y ffmpeg)
           pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
           pip install -r tools/tts/requirements.txt
           python -m tools.tts --cache .tts-cache
+      - if: always() && steps.plan.outcome == 'success' && steps.plan.outputs.missing != '0'
+        name: Сохранить кэш TTS
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .tts-cache
+            ~/.cache/torch/hub
+            ~/.cache/piper-voices
+          key: ${{ steps.tts-cache.outputs.cache-primary-key }}
 
       - name: Клипы и audio-manifest.json
         run: npx tsx tools/tts/emit.ts --cache .tts-cache --out public/audio
