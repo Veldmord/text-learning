@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.tts-cache/
+src/data/play.json
+src/data/cast.json
+public/audio/
+test-results/
+playwright-report/
+.lighthouseci/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
