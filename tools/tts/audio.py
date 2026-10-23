@@ -11,6 +11,10 @@ from pathlib import Path
 
 TRIM = "silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.05"
 LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
+# loudnorm (ffmpeg 6.1) навсегда встаёт в конце потока, если после первых 3 с и целых 100-мс блоков остаётся
+# хвост в несколько сэмплов — так выходит у клипов длиной ровно кратной 100 мс. Перед ним дополняем поток
+# тишиной до кратного 25 мс на 192 кГц (частота loudnorm): хвост тогда 0, 25, 50 или 75 мс.
+PAD = "aformat=sample_fmts=dbl:sample_rates=192000,asetnsamples=n=4800"
 #: Клип — одна фраза, ffmpeg обычно укладывается в доли секунды; зависший процесс — ошибка с командой в тексте
 TIMEOUT = 120
 
@@ -40,7 +44,7 @@ def filter_chain(tempo: float, pitch_semitones: float, rubberband: bool | None =
         else:
             # Без librubberband: меняем частоту дискретизации и возвращаем темп
             filters.append(f"asetrate=48000*{ratio:.5f},aresample=48000,atempo={1 / ratio:.5f}")
-    filters.append(LOUDNORM)
+    filters += [PAD, LOUDNORM]
     return ",".join(filters)
 
 

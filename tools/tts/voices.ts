@@ -8,7 +8,7 @@ import type { Play } from '../../src/engine/types';
 import { normalizeForTts, stressForPiper, type Pronunciations } from './normalize';
 
 /** Меняется при любом изменении постобработки (ffmpeg, нормализация) — тогда перегенерируется всё. */
-export const PIPELINE_VERSION = 1;
+export const PIPELINE_VERSION = 2;
 export const NARRATOR = 'narrator';
 export const ROOT = resolve(import.meta.dirname, '../..');
 
