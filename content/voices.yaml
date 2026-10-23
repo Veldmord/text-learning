@@ -1,0 +1,20 @@
+# Голоса персонажей (раздел 9.3). Стартовое распределение — подобрать на слух при выверке озвучки.
+# engine: silero | piper
+#   silero: model (v5_ru), speaker (aidar, eugene, baya, kseniya, xenia)
+#   piper:  voice (ru_RU-denis-medium, ru_RU-dmitri-medium, ru_RU-ruslan-medium, ru_RU-irina-medium)
+# rate  — темп синтеза (1.0 — как есть); скорость воспроизведения настраивает актёр в приложении.
+# pitch — сдвиг в полутонах (ffmpeg rubberband), чтобы второстепенные роли с общим голосом звучали различимо.
+defaults: { engine: silero, model: v5_ru, rate: 1.0, pitch: 0 }
+narrator: { engine: piper, voice: ru_RU-denis-medium, rate: 0.95 }   # ремарки
+characters:
+  molodoy-chelovek: { engine: silero, speaker: aidar }
+  devushka:         { engine: silero, speaker: xenia }
+  starik:           { engine: piper,  voice: ru_RU-dmitri-medium, rate: 0.9 }
+  zhenshchina:      { engine: silero, speaker: baya }
+  dama:             { engine: silero, speaker: kseniya }
+  muzhchina:        { engine: silero, speaker: eugene }
+  administrator:    { engine: piper,  voice: ru_RU-ruslan-medium }
+  sekretarsha:      { engine: piper,  voice: ru_RU-irina-medium, rate: 1.05 }
+  shofer:           { engine: piper,  voice: ru_RU-ruslan-medium, pitch: -2 }
+  sanitar-1:        { engine: piper,  voice: ru_RU-denis-medium, pitch: -1 }
+  sanitar-2:        { engine: piper,  voice: ru_RU-dmitri-medium, pitch: 1 }

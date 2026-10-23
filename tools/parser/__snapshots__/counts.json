@@ -1,0 +1,31 @@
+{
+  "lines": {
+    "administrator": 52,
+    "dama": 117,
+    "devushka": 206,
+    "molodoy-chelovek": 123,
+    "muzhchina": 114,
+    "sanitar-1": 4,
+    "sanitar-2": 1,
+    "sekretarsha": 5,
+    "shofer": 1,
+    "starik": 107,
+    "zhenshchina": 101
+  },
+  "words": {
+    "administrator": 268,
+    "dama": 1045,
+    "devushka": 1976,
+    "molodoy-chelovek": 894,
+    "muzhchina": 1143,
+    "sanitar-1": 14,
+    "sanitar-2": 7,
+    "sekretarsha": 25,
+    "shofer": 5,
+    "starik": 1342,
+    "zhenshchina": 1085
+  },
+  "totalLines": 831,
+  "continuations": 34,
+  "directions": 129
+}

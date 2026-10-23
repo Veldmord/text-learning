@@ -1,0 +1,10 @@
+# Ручные правки разбора по номеру строки content/raiskie-vrata.txt.
+# Нужны, только если форматирование строки неоднозначно. Поля:
+#   kind: line | direction | skip   — как трактовать строку
+#   speaker: <id персонажа>         — для kind: line
+#   continuation: true|false        — для kind: line
+#   text: "<исправленный текст>"    — заменить текст строки (без имени персонажа)
+# Пример:
+#   57: { kind: direction }
+#   58: { kind: line, speaker: devushka, continuation: true }
+{}

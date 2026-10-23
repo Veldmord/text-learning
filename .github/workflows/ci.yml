@@ -1,0 +1,69 @@
+name: ci
+
+# Каждый PR: те же проверки, что при деплое, но без синтеза голосов (используется голос браузера)
+# и без публикации, плюс Lighthouse CI с бюджетами NFR-01. Защищённая ветка main требует зелёный ci.yml.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+
+      - run: npm ci
+      - name: Аудит зависимостей
+        run: npm audit --audit-level=high
+
+      - name: Разбор пьесы и снапшот численности
+        run: npm run parse -- --validate
+
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Юнит- и компонентные тесты, покрытие engine/ ≥ 90 %
+        run: npm run coverage
+
+      - name: Сборка
+        run: npm run build
+      - name: Размер сайта ≤ 100 МБ
+        run: npm run check:size
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: TTS-пайплайн без синтеза (план, проверка Python-модуля)
+        run: |
+          python -m compileall -q tools/tts
+          npx tsx tools/tts/plan.ts --cache .tts-cache
+          python -m tools.tts --cache .tts-cache --dry-run
+
+      - name: Браузеры Playwright
+        run: npx playwright install --with-deps chromium webkit
+      - name: e2e (Chromium, WebKit; мобильные viewport)
+        run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
+      - name: Lighthouse CI (бюджеты производительности и доступности)
+        run: npx --yes @lhci/cli@0.15.1 autorun
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lighthouse
+          path: .lighthouseci
+          retention-days: 7

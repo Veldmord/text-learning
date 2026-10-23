@@ -1,0 +1,4 @@
+# torch и torchaudio ставятся отдельно с CPU-индексом PyTorch (см. .github/workflows/deploy.yml)
+omegaconf==2.3.0
+numpy>=1.26,<3
+piper-tts>=1.3,<2

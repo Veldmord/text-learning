@@ -1,0 +1,4 @@
+* text=auto eol=lf
+content/*.txt text eol=crlf
+*.png binary
+*.mp3 binary

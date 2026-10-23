@@ -1,0 +1,57 @@
+# Персонажи пьесы: id, отображаемое имя, написания в тексте (aliases), группа и пол.
+# Пол нужен для выбора голоса браузера в фолбэке озвучки.
+# Персонажи из списка действующих лиц без реплик парсер помечает как немых (speaking: false).
+- id: molodoy-chelovek
+  name: Молодой человек
+  aliases: [МОЛОДОЙ ЧЕЛОВЕК]
+  gender: m
+- id: devushka
+  name: Девушка
+  aliases: [ДЕВУШКА]
+  gender: f
+- id: starik
+  name: Старик
+  aliases: [СТАРИК]
+  gender: m
+- id: zhenshchina
+  name: Женщина
+  aliases: [ЖЕНЩИНА]
+  gender: f
+- id: dama
+  name: Дама
+  aliases: [ДАМА]
+  gender: f
+- id: muzhchina
+  name: Мужчина
+  aliases: [МУЖЧИНА]
+  gender: m
+- id: administrator
+  name: Администратор
+  aliases: [АДМИНИСТРАТОР]
+  gender: m
+- id: sekretarsha
+  name: Секретарша
+  aliases: [СЕКРЕТАРША]
+  gender: f
+- id: sanitar-1
+  name: Первый санитар
+  aliases: [ПЕРВЫЙ САНИТАР]
+  group: Санитары
+  gender: m
+- id: sanitar-2
+  name: Второй санитар
+  aliases: [ВТОРОЙ САНИТАР]
+  group: Санитары
+  gender: m
+- id: shofer
+  name: Шофёр
+  aliases: [ШОФЕР, ШОФЁР, Шофер]
+  gender: m
+- id: soprovozhdayushchie
+  name: Сопровождающие
+  aliases: []
+  gender: m
+- id: nekto
+  name: Некто
+  aliases: []
+  gender: m
