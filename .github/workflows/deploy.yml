@@ -44,7 +44,7 @@ jobs:
         run: npx tsx tools/tts/plan.ts --cache .tts-cache >> "$GITHUB_OUTPUT"
 
       - if: steps.plan.outputs.missing != '0'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with: { python-version: '3.12', cache: pip, cache-dependency-path: tools/tts/requirements.txt }
       - if: steps.plan.outputs.missing != '0'
         name: Синтез недостающих клипов
