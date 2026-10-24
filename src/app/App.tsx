@@ -11,7 +11,7 @@ import { useApp, useSettings } from './store';
 const Banners = lazy(() => import('./Banners').then((m) => ({ default: m.Banners })));
 const RoleOverview = lazy(() => import('../features/role-overview/RoleOverview').then((m) => ({ default: m.RoleOverview })));
 const SessionScreen = lazy(() => import('../features/session/SessionScreen').then((m) => ({ default: m.SessionScreen })));
-const ReadThrough = lazy(() => import('../features/read-through/ReadThrough'));
+const TextScreen = lazy(() => import('../features/text/TextScreen'));
 const Stats = lazy(() => import('../features/stats/Stats'));
 const SettingsScreen = lazy(() => import('../features/settings/SettingsScreen'));
 const About = lazy(() => import('../features/about/About'));
@@ -113,7 +113,7 @@ function AppRoutes() {
           <Route path="/roles" element={<RoleSelect />} />
           <Route path="/r/:roles" element={<RequirePlay><RoleOverview /></RequirePlay>} />
           <Route path="/r/:roles/train/:mode" element={<RequirePlay><SessionScreen /></RequirePlay>} />
-          <Route path="/r/:roles/read" element={<RequirePlay><ReadThrough /></RequirePlay>} />
+          <Route path="/r/:roles/read" element={<RequirePlay><TextScreen /></RequirePlay>} />
           <Route path="/r/:roles/stats" element={<RequirePlay><Stats /></RequirePlay>} />
           <Route path="/settings" element={<RequirePlay><SettingsScreen /></RequirePlay>} />
           <Route path="/about" element={<RequirePlay><About /></RequirePlay>} />

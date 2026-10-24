@@ -1,4 +1,4 @@
-// Отрисовка реплик: фрагменты своей реплики (скрытые слова, буквы, подсказки суфлёра) и элементы контекста.
+// Отрисовка реплик: фрагменты своей реплики (первые буквы, подсказки суфлёра) и элементы ленты сцены.
 import type { Piece } from '../../engine/modes/render';
 import type { PlayIndex } from '../../engine/queries';
 import type { Item } from '../../engine/types';
@@ -18,8 +18,6 @@ export function Pieces({ pieces }: { pieces: Piece[] }) {
                 ({p.text})
               </span>
             );
-          case 'blank':
-            return <span key={i} className="blank" style={{ width: `${Math.min(p.length, 14) * 0.55}em` }} aria-hidden="true" />;
           case 'letters':
             return (
               <span key={i} className="letters" aria-hidden="true">

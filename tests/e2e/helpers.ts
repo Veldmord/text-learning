@@ -66,12 +66,16 @@ export function readCursor(page: Page, key: string): Promise<string | null> {
   );
 }
 
-/** Выбрать роль на стартовом экране и открыть обзор. */
+/** Выбрать роль на стартовом экране и открыть обзор. Баннер установки на iOS появляется через секунду
+ * и сдвигает разметку — клик повторяется, пока обзор не откроется. */
 export async function chooseRole(page: Page, name: string): Promise<void> {
   await page.goto('./');
   await page.getByRole('checkbox', { name: new RegExp(name) }).check();
-  await page.getByRole('button', { name: /^Учить:/ }).click();
-  await expect(page.getByRole('heading', { level: 1, name: new RegExp(name) })).toBeVisible();
+  const overview = page.getByRole('heading', { level: 1, name: new RegExp(name) });
+  await expect(async () => {
+    if (!(await overview.isVisible())) await page.getByRole('button', { name: /^Учить:/ }).click({ timeout: 2000 });
+    await expect(overview).toBeVisible({ timeout: 2000 });
+  }).toPass();
 }
 
 /** Ждём, пока Service Worker возьмёт страницу под контроль и precache заполнится: бандл, стили и play.json.

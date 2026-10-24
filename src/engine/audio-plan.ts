@@ -1,7 +1,7 @@
 // Что звучит: контекст, подсказка партнёра (полностью, последнее предложение, последние N слов), ремарки, «эхо».
 // Аудиодвижок получает готовую очередь и ничего не знает о режимах (раздел 7.2).
-import type { ModeId } from './modes';
-import { cueFor, type PlayIndex } from './queries';
+import type { ModeId, RunFlow } from './modes';
+import { cueFor, getLine, type PlayIndex } from './queries';
 import { lastWords, words as wordsOf } from './text-transforms';
 import type { Direction, Item, ItemId, Line } from './types';
 
@@ -20,6 +20,8 @@ export interface PlanSettings {
   context: number;
   /** Пауза между репликами, мс */
   pauseMs: number;
+  /** Ход «Прогона с буквами» */
+  runFlow: RunFlow;
 }
 
 export interface SpeechUnit {
@@ -120,21 +122,49 @@ export function cuePlan(index: PlayIndex, lineId: string, roles: string[], s: Pl
   return { context, cue: cueUnits, visible, cueLine: cue };
 }
 
+/** Элементы сцены до реплики — лента «Прогона с буквами». */
+function sceneBefore(index: PlayIndex, lineId: string): Item[] {
+  const ids = index.sceneOfItem.get(lineId)?.scene.itemIds ?? [];
+  return ids
+    .slice(0, Math.max(0, ids.indexOf(lineId as ItemId)))
+    .map((id) => index.byId.get(id))
+    .filter((it): it is Item => !!it);
+}
+
 /**
- * План «Прогона с буквами»: на экране — сцена с начала до моей реплики (свои прошлые реплики открыты),
+ * План «Прогона: сразу к моим репликам»: на экране — сцена с начала до моей реплики (свои прошлые реплики открыты),
  * звучит целиком всё, что сказано после моей предыдущей реплики. Подсказка — последняя чужая реплика перед моей.
  * «Контекст» и «Длина подсказки» здесь не действуют; «только текст» — без звука.
  */
 export function scenePlan(index: PlayIndex, lineId: string, roles: string[], s: PlanSettings): CuePlan {
-  const ids = index.sceneOfItem.get(lineId)?.scene.itemIds ?? [];
-  const before = ids
-    .slice(0, Math.max(0, ids.indexOf(lineId as ItemId)))
-    .map((id) => index.byId.get(id))
-    .filter((it): it is Item => !!it);
+  const before = sceneBefore(index, lineId);
   const visible = before.filter((it) => it.kind === 'line' || s.directions !== 'skip');
   let from = before.length;
   while (from > 0 && !isMineItem(before[from - 1]!, roles)) from--;
   return { ...spanUnits(before.slice(from), s), visible };
+}
+
+/**
+ * План шага «Прогона: все реплики по очереди». На экране — сцена с начала до текущей реплики.
+ * Звучат ремарки сразу перед ней (если «голосом») и сама реплика партнёра; на своей реплике — только ремарки.
+ * Подсказка — текущая реплика партнёра, а на своей реплике — чужая реплика прямо перед ней (она уже прозвучала).
+ * «Только текст» — без звука: прогон сразу доходит до моей следующей реплики, лента при этом видна.
+ */
+export function itemPlan(index: PlayIndex, lineId: string, roles: string[], s: PlanSettings): CuePlan {
+  const before = sceneBefore(index, lineId);
+  const visible = before.filter((it) => it.kind === 'line' || s.directions !== 'skip');
+  const line = getLine(index, lineId);
+  const partner = line && !isMineItem(line, roles) ? line : null;
+  const prev = [...before].reverse().find((it): it is Line => it.kind === 'line');
+  const cueLine = partner ?? (prev && !isMineItem(prev, roles) ? prev : null);
+  if (s.cueLength === 'textOnly') return { context: [], cue: [], visible, cueLine };
+  const context: SpeechUnit[] = [];
+  for (let i = before.length - 1; i >= 0 && s.directions === 'voice'; i--) {
+    const it = before[i]!;
+    if (it.kind !== 'direction') break;
+    context.unshift(...endWithPause(directionUnits(it), s.pauseMs));
+  }
+  return { context, cue: partner ? endWithPause(lineUnits(partner), s.pauseMs) : [], visible, cueLine };
 }
 
 export interface PlaySpan {
@@ -175,15 +205,14 @@ function spanUnits(span: Item[], s: PlanSettings): Omit<CuePlan, 'visible'> {
 
 const isMineItem = (it: Item, roles: string[]) => it.kind === 'line' && roles.includes(it.speakerId);
 
-/** Что видно и звучит перед шагом: в «Прогоне с буквами» — сцена, в остальных режимах — подсказка с контекстом. */
-export const stepPlan = (mode: ModeId, index: PlayIndex, lineId: string, roles: string[], s: PlanSettings): CuePlan =>
-  (mode === 'run' ? scenePlan : cuePlan)(index, lineId, roles, s);
-
-/** Озвучка своей реплики после «Показать» («эхо») или в читке. */
-export function echoUnits(line: Line, sentenceIdx?: number[]): SpeechUnit[] {
-  const units = lineUnits(line, 'full');
-  return sentenceIdx ? units.filter((_, i) => sentenceIdx.includes(i)) : units;
+/** Что видно и звучит на шаге: в «Прогоне с буквами» — сцена, в остальных режимах — подсказка с контекстом. */
+export function stepPlan(mode: ModeId, index: PlayIndex, lineId: string, roles: string[], s: PlanSettings): CuePlan {
+  if (mode !== 'run') return cuePlan(index, lineId, roles, s);
+  return (s.runFlow === 'all' ? itemPlan : scenePlan)(index, lineId, roles, s);
 }
+
+/** Озвучка своей реплики после «Открыть» («эхо»). */
+export const echoUnits = (line: Line): SpeechUnit[] => lineUnits(line, 'full');
 
 /** Темп речи для оценок длительности без клипов: ~14 символов в секунду на 1× */
 export const CHARS_PER_SECOND = 14;
@@ -193,20 +222,6 @@ export function estimateMs(text: string): number {
 }
 
 /** Длительность своей реплики на скорости 1×: по клипам манифеста, иначе по темпу речи. */
-export function lineDurationMs(line: Line, clipMs: (sentenceId: string) => number | undefined, sentenceIdx?: number[]): number {
-  const sentences = sentenceIdx ? sentenceIdx.map((i) => line.sentences[i]!).filter(Boolean) : line.sentences;
-  return sentences.reduce((sum, s) => sum + (clipMs(s.id) ?? estimateMs(s.text)) + SENTENCE_GAP_MS, 0);
-}
-
-/** Все реплики и ремарки сцены для «Знакомства» — от элемента `fromId` до конца сцены. */
-export function readThroughUnits(index: PlayIndex, fromId: string, s: Pick<PlanSettings, 'directions' | 'pauseMs'>): SpeechUnit[] {
-  const ref = index.sceneOfItem.get(fromId);
-  if (!ref) return [];
-  const ids = ref.scene.itemIds.slice(ref.scene.itemIds.indexOf(fromId as ItemId));
-  return ids.flatMap((id) => {
-    const it = index.byId.get(id);
-    if (!it) return [];
-    if (it.kind === 'direction') return s.directions === 'voice' ? endWithPause(directionUnits(it), s.pauseMs) : [];
-    return endWithPause(lineUnits(it), s.pauseMs);
-  });
+export function lineDurationMs(line: Line, clipMs: (sentenceId: string) => number | undefined): number {
+  return line.sentences.reduce((sum, s) => sum + (clipMs(s.id) ?? estimateMs(s.text)) + SENTENCE_GAP_MS, 0);
 }

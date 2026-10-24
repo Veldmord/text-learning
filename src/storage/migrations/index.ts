@@ -21,6 +21,15 @@ export const MIGRATIONS: Migration[] = [
       errors: '++id, ts',
     },
   },
+  {
+    // Журнал сессий и избранное. Таблицы оценок (cards, reviews), заметок и прочитанных сцен не читаются с этой версии,
+    // но не удаляются: в них данные пользователя.
+    version: 2,
+    stores: {
+      sessions: 'id, rolesKey, updatedAt',
+      favorites: 'lineId, updatedAt',
+    },
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

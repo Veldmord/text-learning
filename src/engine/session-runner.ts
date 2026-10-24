@@ -1,16 +1,21 @@
-// Исполнитель сессии: держит состояние машины, исполняет эффекты через порты аудио и хранилища.
+// Исполнитель сессии: держит состояние машины, исполняет эффекты через порты аудио и хранилища, ведёт журнал сессии.
 // Порты — интерфейсы, поэтому engine не зависит от браузерных API и тестируется с фейками.
 import { echoUnits, lineDurationMs, playPlan, stepPlan, type AudioRunSpan, type CuePlan, type PlanSettings, type SpeechUnit } from './audio-plan';
-import { applyGrade, cursorKey, type CardRow, type ReviewRow } from './model';
-import { MODES, type ModeId } from './modes';
+import { cursorKey, type SessionRow } from './model';
+import type { ModeId } from './modes';
 import { findStepIndex, type Step } from './modes/steps';
-import { getLine, parseScope, rolesKey, scopeItemIds, type PlayIndex } from './queries';
-import { currentStep, initialState, reduce, type Effect, type SessionAction, type SessionState } from './session-machine';
-import type { Line, LineId } from './types';
+import { getLine, myLinesInScene, parseScope, rolesKey, scopeItemIds, type PlayIndex } from './queries';
+import { currentStep, initialState, leave, reduce, type Effect, type LeaveEffect, type SessionAction, type SessionState } from './session-machine';
+import type { Line } from './types';
+
+export interface PlayOptions {
+  /** Выдержать паузу и после последнего юнита — дыхание перед следующей репликой партнёра */
+  pauseAfter?: boolean;
+}
 
 export interface AudioPort {
   /** Играет очередь; true — доиграла до конца, false — прервана */
-  play(units: SpeechUnit[]): Promise<boolean>;
+  play(units: SpeechUnit[], opts?: PlayOptions): Promise<boolean>;
   silence(ms: number): Promise<boolean>;
   stop(): void;
   pause(): void;
@@ -19,12 +24,8 @@ export interface AudioPort {
 }
 
 export interface StorePort {
-  getCard(lineId: LineId): Promise<CardRow | undefined>;
-  /** Атомарно: обновить карточку и добавить запись журнала. Возвращает id записи. */
-  commitReview(review: ReviewRow, card: CardRow): Promise<number>;
-  /** Удалить запись журнала и восстановить карточку из prevCard */
-  undoReview(reviewId: number): Promise<void>;
   saveCursor(key: string, itemId: string | null): Promise<void>;
+  saveSession(row: SessionRow): Promise<void>;
 }
 
 export interface RunnerSettings extends PlanSettings {
@@ -34,7 +35,6 @@ export interface RunnerSettings extends PlanSettings {
   audioRunK: number;
   audioRun: AudioRunSpan;
   skipScenesWithoutRole: boolean;
-  premiere: string | null;
 }
 
 export interface RunnerDeps {
@@ -46,9 +46,15 @@ export interface RunnerDeps {
   settings: () => RunnerSettings;
   clipMs: (sentenceId: string) => number | undefined;
   now?: () => number;
-  onGraded?: () => void;
+  /** id записи журнала сессии */
+  newId?: () => string;
+  /** Запись журнала сохранена */
+  onSaved?: () => void;
   onError?: (e: unknown) => void;
 }
+
+/** Время на одном шаге засчитывается не больше 5 минут: дольше — актёр отошёл от телефона. */
+export const STEP_TIME_CAP_MS = 5 * 60_000;
 
 export class SessionRunner {
   private state: SessionState;
@@ -56,7 +62,11 @@ export class SessionRunner {
   private queue: Promise<unknown> = Promise.resolve();
   private disposed = false;
   private readonly now: () => number;
+  private readonly newId: () => string;
   private scopeIds: Set<string> | null = null;
+  /** Запись журнала текущей сессии: создаётся при первом уходе с шага */
+  private session: SessionRow | null = null;
+  private startedAt = 0;
 
   constructor(
     private readonly deps: RunnerDeps,
@@ -65,6 +75,7 @@ export class SessionRunner {
     const s = deps.settings();
     this.state = initialState(mode, { autoAdvance: s.autoAdvance, echo: s.echo, waitOnMine: s.audioRun === 'play' });
     this.now = deps.now ?? Date.now;
+    this.newId = deps.newId ?? (() => crypto.randomUUID());
   }
 
   getState = (): SessionState => this.state;
@@ -74,37 +85,50 @@ export class SessionRunner {
     return () => this.listeners.delete(fn);
   };
 
+  /** Эффекты исполняются до оповещения подписчиков: экран видит уже обновлённый журнал сессии. */
   dispatch = (action: SessionAction): void => {
     if (this.disposed) return;
     const [next, effects] = reduce(this.state, action);
     this.state = next;
-    this.listeners.forEach((fn) => fn());
     for (const e of effects) this.run(e);
+    this.listeners.forEach((fn) => fn());
   };
 
-  start(steps: Step[], resumeLineId?: string, mode?: ModeId): void {
-    this.dispatch({ type: 'start', steps, index: findStepIndex(steps, this.deps.index, resumeLineId), now: this.now(), ...(mode ? { mode } : {}) });
+  /** Журнал текущей сессии: время, сказанные реплики, пройденные сцены. */
+  getSession = (): SessionRow | null => this.session;
+
+  /** Новая сессия: с шага, где реплика `fromItemId` (или первого после неё), иначе с начала. */
+  start(steps: Step[], fromItemId?: string | null, mode?: ModeId): void {
+    this.session = null;
+    this.startedAt = this.now();
+    this.dispatch({ type: 'start', steps, index: findStepIndex(steps, this.deps.index, fromItemId), now: this.startedAt, ...(mode ? { mode } : {}) });
   }
 
-  /** Смена режима на лету без потери позиции (FR-04). */
+  /** Смена режима или набора шагов на лету без потери позиции (FR-04). */
   setMode(mode: ModeId, steps: Step[]): void {
-    const lineId = currentStep(this.state)?.lineId;
-    this.dispatch({ type: 'setMode', mode, steps, index: findStepIndex(steps, this.deps.index, lineId), now: this.now() });
+    const itemId = currentStep(this.state)?.itemId;
+    this.dispatch({ type: 'setMode', mode, steps, index: findStepIndex(steps, this.deps.index, itemId), now: this.now() });
+  }
+
+  /** Перейти к реплике по навигации: шаг с ней или первый после неё. */
+  jumpTo(itemId: string): void {
+    this.dispatch({ type: 'jump', index: findStepIndex(this.state.steps, this.deps.index, itemId), now: this.now() });
   }
 
   /** Начать текущий шаг заново — например, после смены варианта аудиопрогона. */
   restartStep(): void {
-    if (this.state.phase === 'done') return;
-    this.dispatch({ type: 'start', steps: this.state.steps, index: this.state.index, now: this.now() });
+    this.dispatch({ type: 'restart', now: this.now() });
   }
 
-  /** Дождаться записи всех оценок (для тестов и перед уходом с экрана). */
+  /** Дождаться записи журнала и курсора (для тестов и перед уходом с экрана). */
   flush(): Promise<unknown> {
     return this.queue;
   }
 
-  /** Остановить звук и игнорировать события (уход с экрана). revive() — вернуть к жизни (повторный mount в StrictMode). */
+  /** Остановить звук и игнорировать события (уход с экрана). Время на текущем шаге идёт в журнал.
+   * revive() — вернуть к жизни (повторный mount в StrictMode). */
   dispose(): void {
+    if (!this.disposed) for (const e of leave(this.state, this.now(), false)) this.track(e);
     this.disposed = true;
     this.deps.audio.stop();
   }
@@ -115,7 +139,7 @@ export class SessionRunner {
 
   currentLine(): Line | undefined {
     const step = currentStep(this.state);
-    return step ? getLine(this.deps.index, step.lineId) : undefined;
+    return step ? getLine(this.deps.index, step.itemId) : undefined;
   }
 
   private enqueue(task: () => Promise<void>): void {
@@ -126,27 +150,54 @@ export class SessionRunner {
     const step = currentStep(this.state);
     if (!step) return [];
     if (phase === 'echo') {
-      const line = getLine(this.deps.index, step.lineId);
-      return line ? echoUnits(line, step.kind === 'chunk' ? step.sentenceIdx : undefined) : [];
+      const line = getLine(this.deps.index, step.itemId);
+      return line ? echoUnits(line) : [];
     }
-    const plan = this.planFor(step.lineId);
+    const plan = this.planFor(step);
     return phase === 'context' ? plan.context : plan.cue;
   }
 
-  private planFor(lineId: LineId): CuePlan {
+  private planFor(step: Step): CuePlan {
     const { index, roles } = this.deps;
     const s = this.deps.settings();
-    if (this.state.mode !== 'audio' || s.audioRun !== 'play') return stepPlan(this.state.mode, index, lineId, roles, s);
+    if (this.state.mode !== 'audio' || s.audioRun !== 'play') return stepPlan(this.state.mode, index, step.itemId, roles, s);
     this.scopeIds ??= scopeItemIds(index, parseScope(this.deps.scopeKey));
-    return playPlan(index, lineId, roles, s, { inScope: this.scopeIds, skipScenesWithoutRole: s.skipScenesWithoutRole });
+    return playPlan(index, step.itemId, roles, s, { inScope: this.scopeIds, skipScenesWithoutRole: s.skipScenesWithoutRole });
   }
 
   private silenceMs(): number {
-    const step = currentStep(this.state);
-    const line = step ? getLine(this.deps.index, step.lineId) : undefined;
-    if (!step || !line) return 0;
-    const ms = lineDurationMs(line, this.deps.clipMs, step.kind === 'chunk' ? step.sentenceIdx : undefined);
-    return Math.round(ms * this.deps.settings().audioRunK);
+    const line = this.currentLine();
+    if (!line) return 0;
+    return Math.round(lineDurationMs(line, this.deps.clipMs) * this.deps.settings().audioRunK);
+  }
+
+  /**
+   * Журнал сессии: активное время, сказанные свои реплики и сцены, пройденные целиком —
+   * все свои реплики сцены встретились в этой сессии, и актёр прошёл сцену до конца.
+   */
+  private track(e: LeaveEffect): void {
+    const { index, roles, store } = this.deps;
+    const now = this.now();
+    let row = this.session;
+    if (!row || row.mode !== e.mode) {
+      row = { id: this.newId(), rolesKey: rolesKey(roles), mode: e.mode, startedAt: row ? now : this.startedAt, updatedAt: now, activeMs: 0, lines: 0, scenes: [] };
+      this.session = row;
+    }
+    row.activeMs += Math.min(e.ms, STEP_TIME_CAP_MS);
+    if (e.said) row.lines++;
+    const sceneId = index.sceneOfItem.get(e.step.itemId)?.scene.id;
+    const leftScene = e.forward && sceneId && (!e.next || index.sceneOfItem.get(e.next.itemId)?.scene.id !== sceneId);
+    if (leftScene && !row.scenes.includes(sceneId)) {
+      const seen = new Set(this.state.seen);
+      const mine = myLinesInScene(index, sceneId, roles);
+      if (mine.length && mine.every((l) => seen.has(l.id))) row.scenes.push(sceneId);
+    }
+    row.updatedAt = now;
+    const snapshot: SessionRow = { ...row, scenes: [...row.scenes] };
+    this.enqueue(async () => {
+      await store.saveSession(snapshot);
+      this.deps.onSaved?.();
+    });
   }
 
   private run(effect: Effect): void {
@@ -163,7 +214,9 @@ export class SessionRunner {
         return;
       case 'play': {
         const { token, phase } = effect;
-        const playing = phase === 'silence' ? audio.silence(this.silenceMs()) : audio.play(this.unitsFor(phase));
+        // Реплика партнёра в прогоне по очереди: пауза между репликами и перед следующей
+        const pauseAfter = phase === 'cue' && currentStep(this.state)?.mine === false;
+        const playing = phase === 'silence' ? audio.silence(this.silenceMs()) : audio.play(this.unitsFor(phase), pauseAfter ? { pauseAfter } : undefined);
         playing
           .then((ended) => {
             if (ended) this.dispatch({ type: 'audioEnded', token, now: this.now() });
@@ -177,44 +230,11 @@ export class SessionRunner {
       case 'saveCursor': {
         const key = cursorKey(rolesKey(this.deps.roles), this.state.mode, this.deps.scopeKey);
         const step = effect.stepIndex === null ? undefined : this.state.steps[effect.stepIndex];
-        this.enqueue(() => store.saveCursor(key, step?.lineId ?? null));
+        this.enqueue(() => store.saveCursor(key, step?.itemId ?? null));
         return;
       }
-      case 'persistGrade': {
-        const mode = this.state.mode;
-        const { step, rating, hinted, durationMs, stepIndex, attempt } = effect;
-        const line = getLine(this.deps.index, step.lineId);
-        if (!line) return;
-        const now = this.now();
-        const affectsFsrs = MODES[mode].affectsFsrs;
-        const detail =
-          step.kind === 'chunk'
-            ? `часть ${step.part}/${step.parts}${attempt ? `, попытка ${attempt + 1}` : ''}`
-            : step.kind === 'order'
-              ? `порядок ${step.id}`
-              : undefined;
-        this.enqueue(async () => {
-          const prev = await store.getCard(line.id);
-          const card = applyGrade(prev, { line, mode, affectsFsrs, rating, now, premiere: this.deps.settings().premiere });
-          const review: ReviewRow = {
-            lineId: line.id,
-            mode,
-            rating,
-            hinted,
-            fsrs: affectsFsrs,
-            ts: now,
-            durationMs,
-            prevCard: prev ?? null,
-            ...(detail ? { detail } : {}),
-          };
-          const reviewId = await store.commitReview(review, card);
-          this.dispatch({ type: 'gradeSaved', stepIndex, reviewId });
-          this.deps.onGraded?.();
-        });
-        return;
-      }
-      case 'undoGrade':
-        this.enqueue(() => store.undoReview(effect.reviewId));
+      case 'leave':
+        this.track(effect);
         return;
       case 'finished':
         return;

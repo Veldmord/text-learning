@@ -16,6 +16,9 @@ const ICONS = {
   next: 'M8.6 18.6 10 20l8-8-8-8-1.4 1.4 6.6 6.6z',
   check: 'M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z',
   user: 'M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-2.7 0-8 1.3-8 4v2h16v-2c0-2.7-5.3-4-8-4z',
+  list: 'M3 5h2v2H3zm4 0h14v2H7zM3 11h2v2H3zm4 0h14v2H7zm-4 6h2v2H3zm4 0h14v2H7z',
+  star: 'm12 17.3 6.2 3.7-1.6-7 5.4-4.7-7.1-.6L12 2 9.1 8.7 2 9.3l5.4 4.7-1.6 7z',
+  starOutline: 'm22 9.2-7.2-.6L12 2 9.2 8.6 2 9.2l5.5 4.7L5.8 21 12 17.3l6.2 3.7-1.6-7.1zm-10 6.2-3.8 2.3 1-4.3-3.3-2.9 4.4-.4L12 6.1l1.7 4.1 4.4.4-3.3 2.9 1 4.3z',
 } as const;
 
 export type IconName = keyof typeof ICONS;
@@ -171,6 +174,17 @@ export function Sheet({ title, open, onClose, children }: { title: string; open:
 }
 
 export const percent = (v: number) => `${Math.round(v * 100)} %`;
+
+/** Начало текста для списков: не длиннее n символов, с многоточием. */
+export const preview = (text: string, n = 60) => (text.length > n ? `${text.slice(0, n).trimEnd()}…` : text);
+
+/** «сегодня», «вчера» или «12 окт.» */
+export function formatDay(ts: number, now = Date.now()): string {
+  const day = (t: number) => new Date(t).toDateString();
+  if (day(ts) === day(now)) return 'сегодня';
+  if (day(ts) === day(now - 86_400_000)) return 'вчера';
+  return new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+}
 
 export function formatDuration(ms: number): string {
   const min = Math.round(ms / 60_000);

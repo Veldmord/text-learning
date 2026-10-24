@@ -1,8 +1,9 @@
-// FR-02. Обзор роли: карта сцен с выученностью, «Путь роли», диапазон, режимы, продолжение, офлайн.
+// FR-02. Обзор роли: пройденные сцены, главные кнопки «Открыть текст» и «Прогон с буквами», продолжение, диапазон, карта сцен, офлайн.
 import { useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LONG_LINE_WORDS, MODES, TRAIN_MODES, isModeId, type ModeId } from '../../engine/modes';
-import { adviseScene, overallRatio, roleProgress, type Advice, type SceneProgress } from '../../engine/progress';
+import type { SessionRow } from '../../engine/model';
+import { isModeId, MODES, RUN_FLOWS, type ModeId } from '../../engine/modes';
+import { passCount, passedShare, roleProgress, summarize } from '../../engine/progress';
 import {
   formatScope,
   getLine,
@@ -17,25 +18,12 @@ import {
   scopeLabel,
   type Scope,
 } from '../../engine/queries';
-import { isWeak } from '../../engine/srs';
 import { useLiveQuery } from '../../app/hooks';
 import { repo } from '../../app/services';
 import { useApp, useSettings } from '../../app/store';
-import { Icon, percent, plural, Progress, TopBar } from '../../app/ui';
+import { formatDay, formatDuration, Icon, plural, preview, Progress, TopBar } from '../../app/ui';
 import { OfflinePanel } from './OfflinePanel';
 import { ScopePicker, scopeKind } from './ScopePicker';
-
-function adviceLabel(a: Advice): string {
-  return a.then ? `${MODES[a.mode].title} → ${MODES[a.then].title}` : MODES[a.mode].title;
-}
-
-/** Рекомендация для диапазона: слабые — первыми, затем первая невыученная сцена. */
-function adviseScope(scenes: SceneProgress[], dueTotal: number): Advice | null {
-  if (dueTotal > 0) return { mode: 'weak', reason: `${dueTotal} ${plural(dueTotal, 'реплика ждёт', 'реплики ждут', 'реплик ждут')} повторения` };
-  const pending = scenes.map(adviseScene).find((a) => a.mode !== 'audio');
-  if (pending) return pending;
-  return scenes.length ? { mode: 'audio', reason: 'Всё выучено — прогоняйте на слух' } : null;
-}
 
 export function RoleOverview() {
   const params = useParams();
@@ -44,12 +32,13 @@ export function RoleOverview() {
   const index = useApp((s) => s.index)!;
   const update = useSettings((s) => s.update);
   const lastRoles = useSettings((s) => s.lastRoles);
+  const runFlow = useSettings((s) => s.runFlow);
   const roles = useMemo(() => parseRoles(params.roles, index), [params.roles, index]);
   const key = rolesKey(roles);
   const scope = useMemo(() => parseScope(search.get('scope')), [search]);
 
-  const cards = useLiveQuery(() => repo.getCards(), [], new Map());
-  const readScenes = useLiveQuery(() => repo.readScenes(), [], new Set<string>());
+  const sessions = useLiveQuery(() => repo.sessions(key), [key], [] as SessionRow[]);
+  const favorites = useLiveQuery(() => repo.favorites(), [], new Set<string>());
   const cursors = useLiveQuery(() => repo.allCursors(), [], []);
 
   useEffect(() => {
@@ -57,25 +46,25 @@ export function RoleOverview() {
   }, [roles, lastRoles, update]);
 
   const [now] = useState(() => Date.now());
-  const scenes = useMemo(() => roleProgress(index, roles, cards, readScenes, now), [index, roles, cards, readScenes, now]);
-  const scopeIds = useMemo(() => scopeItemIds(index, scope), [index, scope]);
-  const scopeScenes = scenes.filter((s) => s.ref.scene.itemIds.some((id) => scopeIds.has(id)));
+  const scenes = useMemo(() => roleProgress(index, roles, sessions), [index, roles, sessions]);
+  const week = useMemo(() => summarize(sessions, now, 7), [sessions, now]);
   const linesInScope = useMemo(() => myLinesInScope(index, roles, scope), [index, roles, scope]);
-  const weakAll = useMemo(() => myLinesInScope(index, roles, { parts: [], weak: false }).filter((l) => isWeak(cards.get(l.id), now)), [index, roles, cards, now]);
-  const dueInScope = linesInScope.filter((l) => isWeak(cards.get(l.id), now)).length;
 
   if (!roles.length) return <Navigate to="/roles" replace />;
 
+  const base = `/r/${roles.join(',')}`;
   const stats = roleStats(index, roles);
-  const ratio = overallRatio(scenes);
-  const advice = adviseScope(scopeScenes, dueInScope);
+  const passed = scenes.filter((s) => passCount(s) > 0).length;
   const scopeStr = formatScope(scope);
-  const trainUrl = (mode: ModeId, s: string = scopeStr) =>
-    mode === 'read' ? `/r/${roles.join(',')}/read${s !== 'all' ? `?at=${firstItemOf(s)}` : ''}` : `/r/${roles.join(',')}/train/${mode}?scope=${encodeURIComponent(s)}`;
-  function firstItemOf(s: string): string {
-    const first = index.play.items.find((it) => scopeItemIds(index, parseScope(s)).has(it.id));
-    return first?.id ?? '';
-  }
+  const trainUrl = (mode: ModeId, s: string = scopeStr) => `${base}/train/${mode}?scope=${encodeURIComponent(s)}`;
+  const firstItemOf = (s: string) => {
+    const ids = scopeItemIds(index, parseScope(s));
+    return index.play.items.find((it) => ids.has(it.id))?.id;
+  };
+  const textUrl = (s: string = scopeStr) => {
+    const first = s === 'all' ? undefined : firstItemOf(s);
+    return `${base}/read${first ? `?at=${first}` : ''}`;
+  };
   const setScope = (s: Scope) => {
     const next = new URLSearchParams(search);
     const str = formatScope(s);
@@ -88,12 +77,13 @@ export function RoleOverview() {
     const ids = scope.parts.filter((p) => p.kind === 'scene').map((p) => (p.kind === 'scene' ? p.id : ''));
     const nextIds = on ? [...new Set([...ids, sceneId])] : ids.filter((id) => id !== sceneId);
     const ordered = index.scenes.map((r) => r.scene.id).filter((id) => nextIds.includes(id));
-    setScope({ parts: ordered.map((id) => ({ kind: 'scene' as const, id })), weak: scope.weak });
+    setScope({ parts: ordered.map((id) => ({ kind: 'scene' as const, id })) });
   };
 
   const lastCursor = cursors
     .filter((c) => c.key.startsWith(`${key}:`))
-    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .find((c) => isModeId(c.key.split(':')[1]));
   const resume = lastCursor
     ? (() => {
         const [, mode, sc] = lastCursor.key.split(':');
@@ -101,7 +91,8 @@ export function RoleOverview() {
         return isModeId(mode) && line ? { mode, scope: sc ?? 'all', line } : null;
       })()
     : null;
-  const longLines = linesInScope.filter((l) => l.words > LONG_LINE_WORDS).length;
+  const favCount = index.lines.filter((l) => favorites.has(l.id)).length;
+  const empty = linesInScope.length === 0;
   const sceneMode = scopeKind(scope) === 'scenes';
 
   return (
@@ -111,10 +102,7 @@ export function RoleOverview() {
         subtitle={`${stats.lines} ${plural(stats.lines, 'реплика', 'реплики', 'реплик')} · ${stats.words} ${plural(stats.words, 'слово', 'слова', 'слов')}`}
         actions={
           <>
-            <Link className="btn btn--icon" to={`/r/${roles.join(',')}/read`} aria-label="Читка пьесы">
-              <Icon name="book" />
-            </Link>
-            <Link className="btn btn--icon" to={`/r/${roles.join(',')}/stats`} aria-label="Статистика">
+            <Link className="btn btn--icon" to={`${base}/stats`} aria-label="Статистика">
               <Icon name="chart" />
             </Link>
             <Link className="btn btn--icon" to="/settings" aria-label="Настройки">
@@ -126,32 +114,20 @@ export function RoleOverview() {
       <main className="page">
         <section className="card">
           <div className="row row--between">
-            <strong>Выучено {percent(ratio)}</strong>
+            <strong>
+              Пройдено сцен: {passed} из {scenes.length}
+            </strong>
             <Link to="/roles" className="small">
               Сменить роль
             </Link>
           </div>
-          <Progress value={ratio} label="Выученность роли" />
+          <Progress value={passedShare(scenes)} label="Пройдено сцен" />
           <p className="small muted" style={{ marginBottom: 0 }}>
-            Реплика выучена, когда прогноз вспоминания на сегодня не ниже 90 %.
+            За 7 дней: {formatDuration(week.totalMs)}
+            {week.streak > 0 && ` · ${week.streak} ${plural(week.streak, 'день', 'дня', 'дней')} подряд`}. Сцена пройдена, когда в одной тренировке встретились все ваши
+            реплики в ней.
           </p>
         </section>
-
-        {weakAll.length > 0 && (
-          <section className="card card--accent">
-            <div className="row row--between">
-              <div>
-                <strong>Слабые места</strong> <span className="chip chip--due">{weakAll.length}</span>
-                <p className="small muted" style={{ margin: '4px 0 0' }}>
-                  Ежедневное повторение — 5–10 минут
-                </p>
-              </div>
-              <Link className="btn btn--primary" to={trainUrl('weak', 'all')}>
-                Повторить
-              </Link>
-            </div>
-          </section>
-        )}
 
         {resume && (
           <section className="card">
@@ -159,7 +135,7 @@ export function RoleOverview() {
               <div style={{ minWidth: 0, flex: 1 }}>
                 <strong>Продолжить: {MODES[resume.mode].title}</strong>
                 <p className="small muted" style={{ margin: '4px 0 0' }}>
-                  {scopeLabel(index, parseScope(resume.scope))} · «{lineSpeech(resume.line).slice(0, 60)}…»
+                  {scopeLabel(index, parseScope(resume.scope))} · «{preview(lineSpeech(resume.line))}»
                 </p>
               </div>
               <Link className="btn" to={trainUrl(resume.mode, resume.scope)}>
@@ -169,58 +145,73 @@ export function RoleOverview() {
           </section>
         )}
 
+        <div className="main-actions">
+          <Link className="main-action" to={textUrl()}>
+            <span className="main-action__icon" aria-hidden="true">
+              📖
+            </span>
+            <strong>Открыть текст</strong>
+            <span>Вся пьеса, подсвечена ваша роль</span>
+          </Link>
+          {empty ? (
+            <div className="main-action main-action--primary" aria-disabled="true">
+              <span className="main-action__icon" aria-hidden="true">
+                {MODES.run.icon}
+              </span>
+              <strong>{MODES.run.title}</strong>
+              <span>В диапазоне нет ваших реплик</span>
+            </div>
+          ) : (
+            <Link className="main-action main-action--primary" to={trainUrl('run')}>
+              <span className="main-action__icon" aria-hidden="true">
+                {MODES.run.icon}
+              </span>
+              <strong>{MODES.run.title}</strong>
+              <span>{RUN_FLOWS[runFlow].label}</span>
+            </Link>
+          )}
+        </div>
+        <div className="grid-modes">
+          {(['letters', 'audio'] as const).map((m) =>
+            empty ? (
+              <div key={m} className="mode-card" aria-disabled="true">
+                <span className="mode-card__icon" aria-hidden="true">
+                  {MODES[m].icon}
+                </span>
+                <strong>{MODES[m].title}</strong>
+                <span>В диапазоне нет ваших реплик</span>
+              </div>
+            ) : (
+              <Link key={m} to={trainUrl(m)} className="mode-card">
+                <span className="mode-card__icon" aria-hidden="true">
+                  {MODES[m].icon}
+                </span>
+                <strong>{MODES[m].title}</strong>
+                <span>{MODES[m].when}</span>
+              </Link>
+            ),
+          )}
+          <Link to={`${base}/read?fav=1`} className="mode-card">
+            <span className="mode-card__icon" aria-hidden="true">
+              <Icon name="star" />
+            </span>
+            <strong>Избранное · {favCount}</strong>
+            <span>{favCount ? 'Отмеченные реплики' : 'Отмечайте реплики в тексте'}</span>
+          </Link>
+        </div>
+
         <h2 className="section-title">Диапазон</h2>
         <ScopePicker index={index} roles={roles} scope={scope} onChange={setScope} />
         <p className="small muted">
           {scopeLabel(index, scope)}: {linesInScope.length} {plural(linesInScope.length, 'реплика', 'реплики', 'реплик')}
-          {scope.weak ? '' : `, из них слабых ${dueInScope}`}
         </p>
-
-        <h2 className="section-title">Режим</h2>
-        {advice && (
-          <p className="small">
-            <strong>Путь роли:</strong> {adviceLabel(advice)} — {advice.reason}.
-          </p>
-        )}
-        <div className="grid-modes">
-          {(['read', ...TRAIN_MODES] as ModeId[]).map((m) => {
-            const def = MODES[m];
-            const disabled = m !== 'read' && m !== 'weak' && linesInScope.length === 0;
-            const chunksEmpty = m === 'chunks' && longLines === 0;
-            const recommended = advice?.mode === m;
-            const label = m === 'chunks' ? `${def.description} В диапазоне: ${longLines}.` : def.description;
-            if (disabled || chunksEmpty) {
-              return (
-                <div key={m} className="mode-card" aria-disabled="true" style={{ opacity: 0.5 }}>
-                  <span className="mode-card__icon" aria-hidden="true">
-                    {def.icon}
-                  </span>
-                  <strong>{def.title}</strong>
-                  <span>{chunksEmpty ? 'В диапазоне нет реплик длиннее 40 слов' : 'В диапазоне нет ваших реплик'}</span>
-                </div>
-              );
-            }
-            return (
-              <Link key={m} to={trainUrl(m)} className={`mode-card${recommended ? ' mode-card--recommended' : ''}`}>
-                <span className="mode-card__icon" aria-hidden="true">
-                  {def.icon}
-                </span>
-                <strong>
-                  {def.title}
-                  {recommended && <span className="sr-only"> (рекомендуется)</span>}
-                </strong>
-                <span>{label}</span>
-              </Link>
-            );
-          })}
-        </div>
 
         <h2 className="section-title">Карта сцен</h2>
         <ul className="scene-list">
           {scenes.map((p) => {
-            const a = adviseScene(p);
             const sceneId = p.ref.scene.id;
             const checked = scope.parts.some((x) => x.kind === 'scene' && x.id === sceneId);
+            const count = passCount(p);
             return (
               <li key={sceneId} className="scene">
                 {sceneMode ? (
@@ -235,28 +226,24 @@ export function RoleOverview() {
                   {p.ref.scene.title}
                 </span>
                 <div className="scene__meta">
-                  <span style={{ flex: '1 1 120px' }}>
-                    <Progress value={p.ratio} label={`Выученность сцены «${p.ref.scene.title}»`} />
-                  </span>
                   <span>
-                    {percent(p.ratio)} · {p.total} {plural(p.total, 'реплика', 'реплики', 'реплик')}
+                    {p.total} {plural(p.total, 'реплика', 'реплики', 'реплик')}
                   </span>
-                  {p.due > 0 && <span className="chip chip--due">{p.due} к повторению</span>}
+                  {count > 0 ? (
+                    <span className="chip chip--done">
+                      <Icon name="check" /> {count} {plural(count, 'прогон', 'прогона', 'прогонов')} · {formatDay(p.lastPassAt!, now)}
+                    </span>
+                  ) : (
+                    <span>не пройдена</span>
+                  )}
                 </div>
                 <div className="scene__actions">
-                  <button className="btn btn--small btn--primary" type="button" onClick={() => navigate(trainUrl(a.mode, sceneId))} title={a.reason}>
-                    {adviceLabel(a)}
+                  <button className="btn btn--small btn--primary" type="button" onClick={() => navigate(trainUrl('run', sceneId))}>
+                    Прогон
                   </button>
-                  {a.mode !== 'cue' && (
-                    <button className="btn btn--small" type="button" onClick={() => navigate(trainUrl('cue', sceneId))}>
-                      По репликам
-                    </button>
-                  )}
-                  {a.mode !== 'read' && (
-                    <button className="btn btn--small btn--ghost" type="button" onClick={() => navigate(trainUrl('read', sceneId))}>
-                      Читать
-                    </button>
-                  )}
+                  <button className="btn btn--small btn--ghost" type="button" onClick={() => navigate(textUrl(sceneId))}>
+                    Текст
+                  </button>
                 </div>
               </li>
             );

@@ -2,7 +2,7 @@
 // предзагрузка следующих клипов, паузы тишиной в фоне, фолбэк на speechSynthesis.
 // Ничего не знает о режимах: получает очередь SpeechUnit от engine.
 import type { SpeechUnit } from '../engine/audio-plan';
-import type { AudioPort } from '../engine/session-runner';
+import type { AudioPort, PlayOptions } from '../engine/session-runner';
 import type { AudioManifest } from '../engine/types';
 import { synthesisAvailable, TtsFallback, type VoiceSpec } from './tts-fallback';
 
@@ -82,7 +82,7 @@ export class AudioEngine implements AudioPort {
     }
   }
 
-  async play(units: SpeechUnit[]): Promise<boolean> {
+  async play(units: SpeechUnit[], opts: PlayOptions = {}): Promise<boolean> {
     const gen = ++this.generation;
     for (let i = 0; i < units.length; i++) {
       if (!(await this.waitIfPaused(gen))) return false;
@@ -91,7 +91,8 @@ export class AudioEngine implements AudioPort {
       this.cfg.onUnit?.(u);
       const ok = await this.playUnit(u, gen);
       if (!ok || gen !== this.generation) return false;
-      if (i < units.length - 1 && u.pauseAfterMs > 0 && !(await this.gap(u.pauseAfterMs, gen))) return false;
+      const pause = i < units.length - 1 || opts.pauseAfter;
+      if (pause && u.pauseAfterMs > 0 && !(await this.gap(u.pauseAfterMs, gen))) return false;
     }
     this.cfg.onUnit?.(null);
     return gen === this.generation;

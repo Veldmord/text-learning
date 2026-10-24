@@ -130,7 +130,7 @@ export function myLinesInScene(index: PlayIndex, sceneId: string, roles: string[
 }
 
 // ---------------------------------------------------------------------------
-// Диапазон тренировки (FR-03): вся роль / действие / сцены / от реплики до реплики / только слабые
+// Диапазон тренировки (FR-03): вся роль / действие / сцены / от реплики до реплики
 
 export type ScopePart =
   | { kind: 'act'; n: number }
@@ -139,17 +139,15 @@ export type ScopePart =
 
 export interface Scope {
   parts: ScopePart[];
-  weak: boolean;
 }
 
-export const ALL_SCOPE: Scope = { parts: [], weak: false };
+export const ALL_SCOPE: Scope = { parts: [] };
 
+/** Неизвестные токены (в том числе `weak` из прежних версий в старых ссылках и курсорах) пропускаются. */
 export function parseScope(value: string | null | undefined): Scope {
-  const scope: Scope = { parts: [], weak: false };
+  const scope: Scope = { parts: [] };
   for (const token of (value ?? '').split(',').map((t) => t.trim()).filter(Boolean)) {
-    if (token === 'all') continue;
-    if (token === 'weak') scope.weak = true;
-    else if (/^a\d+$/.test(token)) scope.parts.push({ kind: 'act', n: Number(token.slice(1)) });
+    if (/^a\d+$/.test(token)) scope.parts.push({ kind: 'act', n: Number(token.slice(1)) });
     else if (/^a\d+s\d+$/.test(token)) scope.parts.push({ kind: 'scene', id: token });
     else {
       const m = /^(L\d+)-(L\d+)$/.exec(token);
@@ -161,24 +159,25 @@ export function parseScope(value: string | null | undefined): Scope {
 
 export function formatScope(scope: Scope): string {
   const parts = scope.parts.map((p) => (p.kind === 'act' ? `a${p.n}` : p.kind === 'scene' ? p.id : `${p.from}-${p.to}`));
-  if (scope.weak) parts.push('weak');
   return parts.length ? parts.join(',') : 'all';
 }
+
+/** «Д.1 · 3. Встреча» */
+export const sceneRefLabel = (ref: SceneRef): string => `Д.${ref.act.n} · ${ref.number}. ${ref.scene.title}`;
 
 export function scopeLabel(index: PlayIndex, scope: Scope): string {
   const labels = scope.parts.map((p) => {
     if (p.kind === 'act') return `Действие ${p.n}`;
     if (p.kind === 'scene') {
       const ref = index.sceneById.get(p.id);
-      return ref ? `Д.${ref.act.n} · ${ref.number}. ${ref.scene.title}` : p.id;
+      return ref ? sceneRefLabel(ref) : p.id;
     }
     return `Реплики ${p.from}–${p.to}`;
   });
-  const base = labels.length ? labels.join(', ') : 'Вся роль';
-  return scope.weak ? `${base} · только слабые` : base;
+  return labels.length ? labels.join(', ') : 'Вся роль';
 }
 
-/** Множество элементов пьесы в диапазоне (без фильтра «слабые» — он применяется к карточкам). */
+/** Множество элементов пьесы в диапазоне. */
 export function scopeItemIds(index: PlayIndex, scope: Scope): Set<string> {
   if (!scope.parts.length) return new Set(index.play.items.map((it) => it.id));
   const out = new Set<string>();
@@ -267,11 +266,13 @@ export function itemText(item: Item): string {
     : item.text;
 }
 
-export function searchPlay(index: PlayIndex, query: string, limit = 50): SearchHit[] {
+/** Поиск по тексту; `within` — искать только среди этих элементов (например, в сценах текущей сессии). */
+export function searchPlay(index: PlayIndex, query: string, limit = 50, within?: ReadonlySet<string>): SearchHit[] {
   const q = normalizeForSearch(query.trim());
   if (q.length < 2) return [];
   const hits: SearchHit[] = [];
   for (const item of index.play.items) {
+    if (within && !within.has(item.id)) continue;
     const text = itemText(item);
     const at = normalizeForSearch(text).indexOf(q);
     if (at < 0) continue;

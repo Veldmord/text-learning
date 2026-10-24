@@ -1,21 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import type { SpeechUnit } from '../../src/engine/audio-plan';
-import type { CardRow, ReviewRow } from '../../src/engine/model';
+import type { SessionRow } from '../../src/engine/model';
+import type { ModeId } from '../../src/engine/modes';
 import { buildSteps } from '../../src/engine/modes/steps';
 import { parseScope } from '../../src/engine/queries';
-import { SessionRunner, type AudioPort, type RunnerSettings, type StorePort } from '../../src/engine/session-runner';
-import type { LineId } from '../../src/engine/types';
+import { SessionRunner, STEP_TIME_CAP_MS, type AudioPort, type PlayOptions, type RunnerSettings, type StorePort } from '../../src/engine/session-runner';
 import { miniPlay } from './fixtures';
 
 class FakeAudio implements AudioPort {
   played: SpeechUnit[][] = [];
+  opts: (PlayOptions | undefined)[] = [];
   silences: number[] = [];
   stops = 0;
   paused = false;
   resumable = true;
   private pending: ((v: boolean) => void) | null = null;
-  play(units: SpeechUnit[]) {
+  play(units: SpeechUnit[], opts?: PlayOptions) {
     this.played.push(units);
+    this.opts.push(opts);
     // Как и настоящий движок, пустая очередь «доигрывается» сразу
     if (!units.length) return Promise.resolve(true);
     return new Promise<boolean>((r) => (this.pending = r));
@@ -47,29 +49,14 @@ class FakeAudio implements AudioPort {
 }
 
 class MemoryStore implements StorePort {
-  cards = new Map<string, CardRow>();
-  reviews = new Map<number, ReviewRow>();
   cursors = new Map<string, string>();
-  private nextId = 1;
-  async getCard(lineId: LineId) {
-    return this.cards.get(lineId);
-  }
-  async commitReview(review: ReviewRow, card: CardRow) {
-    this.cards.set(card.lineId, card);
-    const id = this.nextId++;
-    this.reviews.set(id, { ...review, id });
-    return id;
-  }
-  async undoReview(id: number) {
-    const r = this.reviews.get(id);
-    if (!r) return;
-    if (r.prevCard) this.cards.set(r.lineId, r.prevCard);
-    else this.cards.delete(r.lineId);
-    this.reviews.delete(id);
-  }
+  sessions = new Map<string, SessionRow>();
   async saveCursor(key: string, itemId: string | null) {
     if (itemId === null) this.cursors.delete(key);
     else this.cursors.set(key, itemId);
+  }
+  async saveSession(row: SessionRow) {
+    this.sessions.set(row.id, row);
   }
 }
 
@@ -81,21 +68,23 @@ const settings: RunnerSettings = {
   directions: 'text',
   context: 1,
   pauseMs: 0,
+  runFlow: 'all',
   autoAdvance: true,
   echo: false,
   audioRunK: 1.5,
   audioRun: 'cue',
   skipScenesWithoutRole: true,
-  premiere: null,
 };
 
-function setup(mode: 'cue' | 'audio' | 'chunks' | 'letters' = 'cue', over: Partial<RunnerSettings> = {}, scopeKey = 'all') {
+function setup(mode: ModeId = 'letters', over: Partial<RunnerSettings> = {}, scopeKey = 'all') {
   const { index } = miniPlay();
   const audio = new FakeAudio();
   const store = new MemoryStore();
   const errors: unknown[] = [];
-  let graded = 0;
-  let t = 1_000_000;
+  let saved = 0;
+  let ids = 0;
+  const clock = { t: 1_000_000 };
+  const s = { ...settings, ...over };
   const runner = new SessionRunner(
     {
       index,
@@ -103,68 +92,144 @@ function setup(mode: 'cue' | 'audio' | 'chunks' | 'letters' = 'cue', over: Parti
       scopeKey,
       audio,
       store,
-      settings: () => ({ ...settings, ...over }),
+      settings: () => s,
       clipMs: () => 1000,
-      now: () => (t += 1000),
-      onGraded: () => graded++,
+      now: () => clock.t,
+      newId: () => `s${++ids}`,
+      onSaved: () => saved++,
       onError: (e) => errors.push(e),
     },
     mode,
   );
-  const steps = buildSteps({ index, mode, roles: ['a'], scope: parseScope(scopeKey), cards: new Map(), now: t });
-  return { index, audio, store, runner, steps, errors, graded: () => graded };
+  const build = (m: ModeId) => buildSteps({ index, mode: m, roles: ['a'], scope: parseScope(scopeKey), runFlow: s.runFlow, skipScenesWithoutRole: s.skipScenesWithoutRole });
+  const next = (ms = 0) => {
+    clock.t += ms;
+    runner.dispatch({ type: 'next', now: clock.t });
+  };
+  return { index, audio, store, runner, steps: build(mode), build, errors, saved: () => saved, clock, next };
 }
 
 describe('SessionRunner', () => {
-  it('играет подсказку партнёра, сохраняет курсор и оценку', async () => {
-    const { audio, store, runner, steps, graded } = setup();
+  it('играет подсказку партнёра и сохраняет курсор', async () => {
+    const { audio, store, runner, steps, next } = setup();
     runner.start(steps);
     await tick();
     expect(audio.played.slice(0, 2)).toEqual([[], []]);
     expect(runner.getState().phase).toBe('prompt');
-    runner.dispatch({ type: 'next', now: 0 });
+    next();
+    next();
     expect(runner.currentLine()?.id).toBe('L0004');
     await tick();
     expect(runner.getState().phase).toBe('cue');
     expect(audio.played.at(-1)?.map((u) => u.itemId)).toEqual(['L0003']);
+    // В «Первых буквах» после подсказки сразу своя реплика
+    expect(audio.opts.at(-1)).toBeUndefined();
     await audio.finish();
     expect(runner.getState().phase).toBe('prompt');
-    runner.dispatch({ type: 'reveal' });
-    runner.dispatch({ type: 'grade', rating: 'good', now: 0 });
     await runner.flush();
-    expect(store.cards.get('L0004')?.reps).toBe(1);
-    expect([...store.reviews.values()][0]).toMatchObject({ lineId: 'L0004', mode: 'cue', rating: 'good', fsrs: true, prevCard: null });
-    expect(store.cursors.get('a:cue:all')).toBe('L0007');
-    expect(graded()).toBe(1);
-    expect(runner.getState().graded[1]).toBe(1);
+    expect(store.cursors.get('a:letters:all')).toBe('L0004');
   });
 
-  it('«Назад» отменяет оценку и восстанавливает карточку', async () => {
-    const { store, runner, steps } = setup();
+  it('журнал сессии: время, сказанные реплики и сцена, пройденная целиком', async () => {
+    const { store, runner, steps, next, saved } = setup();
     runner.start(steps);
-    runner.dispatch({ type: 'reveal' });
-    runner.dispatch({ type: 'grade', rating: 'again', now: 0 });
+    await tick();
+    next(4000);
+    next(1000);
+    await tick();
+    next();
+    next(2000);
+    next(1000);
     await runner.flush();
-    expect(store.cards.has('L0001')).toBe(true);
-    runner.dispatch({ type: 'back', now: 0 });
-    await runner.flush();
-    expect(store.cards.has('L0001')).toBe(false);
-    expect(store.reviews.size).toBe(0);
+    const rows = [...store.sessions.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 's1', rolesKey: 'a', mode: 'letters', startedAt: 1_000_000, activeMs: 8000, lines: 2, scenes: ['a1s01'] });
+    expect(runner.getSession()).toEqual(rows[0]);
+    expect(saved()).toBe(2);
   });
 
-  it('продолжает с сохранённого места и меняет режим без потери позиции', async () => {
-    const { runner, steps, index } = setup();
+  it('сцена не засчитывается, если до своих реплик не дошла очередь', async () => {
+    const { store, runner, steps, next } = setup();
+    runner.start(steps, 'L0004');
+    await tick();
+    next();
+    next();
+    next();
+    await runner.flush();
+    expect([...store.sessions.values()][0]).toMatchObject({ lines: 1, scenes: [] });
+  });
+
+  it('уход с экрана посреди реплики: время и сказанная реплика идут в журнал', async () => {
+    const { store, runner, steps, clock } = setup();
+    runner.dispose();
+    expect(store.sessions.size).toBe(0);
+    runner.revive();
+    runner.start(steps);
+    await tick();
+    clock.t += 7000;
+    runner.dispose();
+    runner.dispose();
+    await runner.flush();
+    expect([...store.sessions.values()]).toEqual([expect.objectContaining({ activeMs: 7000, lines: 1, scenes: [] })]);
+  });
+
+  it('время на шаге ограничено: актёр мог отойти от телефона', async () => {
+    const { store, runner, steps, next } = setup();
+    runner.start(steps);
+    await tick();
+    next();
+    next(60 * 60_000);
+    await runner.flush();
+    expect([...store.sessions.values()][0]!.activeMs).toBe(STEP_TIME_CAP_MS);
+  });
+
+  it('смена режима на лету: позиция сохраняется, журнал — новая запись', async () => {
+    const { store, runner, steps, build, clock } = setup();
     runner.start(steps, 'L0007');
     expect(runner.currentLine()?.id).toBe('L0007');
-    runner.setMode('letters', buildSteps({ index, mode: 'letters', roles: ['a'], scope: parseScope(''), cards: new Map(), now: 0 }));
-    expect(runner.getState()).toMatchObject({ mode: 'letters', index: 2 });
+    clock.t += 3000;
+    runner.setMode('run', build('run'));
+    expect(runner.getState()).toMatchObject({ mode: 'run', index: 5 });
+    runner.jumpTo('L0009');
+    await runner.flush();
+    expect([...store.sessions.values()].map((r) => [r.mode, r.activeMs])).toEqual([
+      ['letters', 3000],
+      ['run', 0],
+    ]);
+  });
+
+  it('прогон по очереди: реплики партнёров звучат по одной и сами ведут к своей', async () => {
+    const { audio, runner, steps } = setup('run');
+    runner.start(steps, 'L0002');
+    expect(runner.getState().index).toBe(1);
+    await tick();
+    expect(audio.played.at(-1)?.map((u) => u.sentenceId)).toEqual(['S0002.1', 'S0002.2']);
+    // После реплики партнёра — пауза между репликами; ремарки перед ней — без паузы
+    expect(audio.opts.slice(-2)).toEqual([undefined, { pauseAfter: true }]);
+    await audio.finish();
+    expect(runner.getState()).toMatchObject({ index: 2, phase: 'cue' });
+    expect(audio.played.at(-1)?.map((u) => u.itemId)).toEqual(['L0003']);
+    await audio.finish();
+    expect(runner.getState()).toMatchObject({ index: 3, phase: 'prompt' });
+    expect(runner.currentLine()?.id).toBe('L0004');
+  });
+
+  it('прогон по очереди: «Начать» с места из ссылки и переход по навигации', async () => {
+    const { runner, steps } = setup('run');
+    runner.start(steps, 'D0003');
+    expect(runner.currentLine()?.id).toBe('L0006');
+    runner.jumpTo('L0002');
+    expect(runner.getState().index).toBe(1);
+    runner.jumpTo('L0005');
+    expect(runner.currentLine()?.id).toBe('L0006');
   });
 
   it('конец диапазона удаляет курсор', async () => {
-    const { store, runner, steps } = setup();
+    const { store, runner, steps, next } = setup();
     runner.start(steps, 'L0009');
-    runner.dispatch({ type: 'next', now: 0 });
-    runner.dispatch({ type: 'next', now: 0 });
+    next();
+    next();
+    next();
     await runner.flush();
     expect(runner.getState().phase).toBe('done');
     expect(store.cursors.size).toBe(0);
@@ -225,21 +290,11 @@ describe('SessionRunner', () => {
     expect(runner.getState().phase).toBe('cue');
   });
 
-  it('эхо и части монолога пишут детали в журнал', async () => {
-    const { audio, store, runner, index } = setup('chunks', { echo: true });
-    const steps = [
-      { kind: 'chunk' as const, lineId: 'L0004' as const, part: 1, parts: 2, sentenceIdx: [0] },
-      { kind: 'chunk' as const, lineId: 'L0004' as const, part: 2, parts: 2, sentenceIdx: [0, 1] },
-    ];
-    runner.start(steps);
+  it('эхо озвучивает свою реплику после «Открыть»', async () => {
+    const { audio, runner, steps } = setup('letters', { echo: true });
+    runner.start(steps, 'L0004');
     runner.dispatch({ type: 'reveal' });
-    expect(audio.played.at(-1)?.map((u) => u.sentenceId)).toEqual(['S0004.1']);
-    runner.dispatch({ type: 'grade', rating: 'again', now: 0 });
-    runner.dispatch({ type: 'reveal' });
-    runner.dispatch({ type: 'grade', rating: 'good', now: 0 });
-    await runner.flush();
-    expect([...store.reviews.values()].map((r) => r.detail)).toEqual(['часть 1/2', 'часть 1/2, попытка 2']);
-    expect(index.byId.get('L0004')).toBeDefined();
+    expect(audio.played.at(-1)?.map((u) => u.sentenceId)).toEqual(['S0004.1', 'S0004.2']);
   });
 
   it('ошибка аудио не останавливает сессию', async () => {
@@ -252,5 +307,6 @@ describe('SessionRunner', () => {
     runner.dispose();
     runner.dispatch({ type: 'next', now: 0 });
     expect(runner.getState().phase).toBe('prompt');
+    runner.revive();
   });
 });

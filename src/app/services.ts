@@ -40,7 +40,7 @@ export const clipMs = (sentenceId: string): number | undefined => useApp.getStat
 
 let persistRequested = false;
 
-/** navigator.storage.persist() запрашивается при первой оценке (раздел 11.2). */
+/** navigator.storage.persist() запрашивается при первой записи журнала тренировки (раздел 11.2). */
 export async function requestPersist(): Promise<boolean> {
   if (persistRequested || typeof navigator === 'undefined' || !navigator.storage?.persist) return false;
   persistRequested = true;

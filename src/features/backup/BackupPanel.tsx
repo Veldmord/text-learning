@@ -27,7 +27,7 @@ export function BackupPanel() {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       update({ lastBackupAt: Date.now() });
-      setMessage(`Сохранено: ${backup.cards.length} карточек, ${backup.reviews.length} оценок, ${backup.notes.length} заметок.`);
+      setMessage(`Сохранено: тренировок ${backup.sessions.length}, избранных реплик ${backup.favorites.filter((f) => f.on).length}, позиций ${backup.cursors.length}.`);
     } catch (e) {
       reportError(e, 'backup');
       setMessage('Не удалось сохранить файл.');
@@ -41,7 +41,9 @@ export function BackupPanel() {
       if (r.settings) replace({ ...r.settings, lastRoles: r.settings.lastRoles ?? getSettings().lastRoles });
       await reconcileWithPlay(getDb(), index.play, { force: true });
       setMessage(
-        `Импортировано: карточек ${r.cards}, оценок ${r.reviews}, заметок ${r.notes}, позиций ${r.cursors}.` + (r.settings ? ' Настройки взяты из файла — они новее.' : ''),
+        `Импортировано: тренировок ${r.sessions}, избранного ${r.favorites}, позиций ${r.cursors}.` +
+          (r.legacy ? ' Файл из прежней версии: оценки и заметки в этой версии не используются.' : '') +
+          (r.settings ? ' Настройки взяты из файла — они новее.' : ''),
       );
     } catch (e) {
       if (!(e instanceof BackupError)) reportError(e, 'backup');

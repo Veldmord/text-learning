@@ -1,6 +1,7 @@
 // Настройки в localStorage: читаются синхронно до первого рендера, чтобы тема не мигала (раздел 8.2).
 // public/theme-init.js читает те же ключи `theme` и `fontSize` до загрузки бандла.
 import type { AudioRunSpan, CueLength, DirectionsMode } from '../engine/audio-plan';
+import type { RunFlow } from '../engine/modes';
 
 export const SETTINGS_KEY = 'tl.settings';
 
@@ -26,8 +27,8 @@ export interface Settings {
   audioRunK: number;
   /** Аудиопрогон: подсказка и тишина / вся пьеса с остановкой на своей реплике */
   audioRun: AudioRunSpan;
-  /** Дата премьеры YYYY-MM-DD: интервалы FSRS ограничиваются ею */
-  premiere: string | null;
+  /** Прогон с буквами: все реплики по очереди / сразу к моим репликам */
+  runFlow: RunFlow;
   lastRoles: string | null;
   lastBackupAt: number | null;
   updatedAt: number;
@@ -48,7 +49,7 @@ export const DEFAULT_SETTINGS: Settings = {
   skipScenesWithoutRole: true,
   audioRunK: 1.2,
   audioRun: 'cue',
-  premiere: null,
+  runFlow: 'all',
   lastRoles: null,
   lastBackupAt: null,
   updatedAt: 0,
@@ -60,7 +61,7 @@ const oneOf = <T extends string>(v: unknown, values: readonly T[], fallback: T):
   values.includes(v as T) ? (v as T) : fallback;
 const bool = (v: unknown, fallback: boolean) => (typeof v === 'boolean' ? v : fallback);
 
-/** Приводит произвольный объект (из localStorage или бэкапа) к корректным настройкам. */
+/** Приводит произвольный объект (из localStorage или бэкапа) к корректным настройкам; лишние ключи прежних версий отбрасываются. */
 export function sanitizeSettings(raw: unknown): Settings {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<Record<keyof Settings, unknown>>;
   const d = DEFAULT_SETTINGS;
@@ -83,7 +84,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     skipScenesWithoutRole: bool(r.skipScenesWithoutRole, d.skipScenesWithoutRole),
     audioRunK: Math.round(clamp(r.audioRunK, 0.8, 2, d.audioRunK) * 10) / 10,
     audioRun: oneOf(r.audioRun, ['cue', 'play'] as const, d.audioRun),
-    premiere: typeof r.premiere === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.premiere) ? r.premiere : null,
+    runFlow: oneOf(r.runFlow, ['all', 'mine'] as const, d.runFlow),
     lastRoles: typeof r.lastRoles === 'string' && r.lastRoles ? r.lastRoles : null,
     lastBackupAt: typeof r.lastBackupAt === 'number' ? r.lastBackupAt : null,
     updatedAt: typeof r.updatedAt === 'number' ? r.updatedAt : 0,

@@ -13,6 +13,7 @@ import {
   roleNames,
   roleStats,
   rolesKey,
+  sceneRefLabel,
   scenesWithRoles,
   scopeItemIds,
   scopeLabel,
@@ -58,6 +59,7 @@ describe('роли', () => {
 
 describe('диапазон тренировки', () => {
   it('разбирает и сериализует диапазон', () => {
+    // «weak» — фильтр прежних версий: в старых ссылках и курсорах он пропускается
     const s = parseScope('a1,a2s01,L0002-L0004,weak,junk');
     expect(s).toEqual({
       parts: [
@@ -65,11 +67,10 @@ describe('диапазон тренировки', () => {
         { kind: 'scene', id: 'a2s01' },
         { kind: 'range', from: 'L0002', to: 'L0004' },
       ],
-      weak: true,
     });
-    expect(formatScope(s)).toBe('a1,a2s01,L0002-L0004,weak');
+    expect(formatScope(s)).toBe('a1,a2s01,L0002-L0004');
     expect(formatScope(parseScope(''))).toBe('all');
-    expect(parseScope('all')).toEqual({ parts: [], weak: false });
+    expect(parseScope('all')).toEqual({ parts: [] });
   });
 
   it('собирает элементы действия, сцены и диапазона реплик', () => {
@@ -84,7 +85,7 @@ describe('диапазон тренировки', () => {
   it('подписывает диапазон по-русски', () => {
     const { index } = miniPlay();
     expect(scopeLabel(index, parseScope('all'))).toBe('Вся роль');
-    expect(scopeLabel(index, parseScope('a1,weak'))).toBe('Действие 1 · только слабые');
+    expect(scopeLabel(index, parseScope('a1,weak'))).toBe('Действие 1');
     expect(scopeLabel(index, parseScope('a2s01'))).toBe('Д.2 · 1. Снова');
     expect(scopeLabel(index, parseScope('L0001-L0003'))).toBe('Реплики L0001–L0003');
   });
@@ -123,6 +124,13 @@ describe('поиск и текст', () => {
     expect(hits[0]?.match).toBe('Моцарт');
     expect(searchPlay(index, 'ё')).toEqual([]);
     expect(searchPlay(index, 'еще', 3)).toHaveLength(3);
+  });
+
+  it('ищет только среди элементов сессии, если они заданы', () => {
+    const { index } = miniPlay();
+    expect(searchPlay(index, 'здравств').map((h) => h.item.id)).toEqual(['L0008', 'L0009']);
+    expect(searchPlay(index, 'здравств', 50, new Set(['L0009'])).map((h) => h.item.id)).toEqual(['L0009']);
+    expect(sceneRefLabel(index.sceneOfItem.get('L0009')!)).toBe('Д.2 · 1. Снова');
   });
 
   it('текст элемента, имя говорящего и соседние элементы', () => {

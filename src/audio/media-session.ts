@@ -1,5 +1,5 @@
 // MediaSession: кнопки гарнитуры и экрана блокировки управляют тренировкой (раздел 10).
-// play/pause → «Показать» (в аудиопрогоне — пауза), nexttrack → «Далее», previoustrack → «Назад».
+// play/pause → как пробел (пауза на реплике партнёра, «Открыть» и «Далее» на своей; в аудиопрогоне — пауза), nexttrack → «Далее», previoustrack → «Назад».
 
 export interface MediaHandlers {
   play?: () => void;

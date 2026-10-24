@@ -1,18 +1,10 @@
 // Машина состояний сессии — docs/ARCHITECTURE.md, раздел 7.3.
 // Чистый reducer: (состояние, действие) → (новое состояние, эффекты). Эффекты исполняет SessionRunner.
-import { MODES, type ModeId } from './modes';
+import type { ModeId } from './modes';
 import type { Step } from './modes/steps';
-import { capGrade, type Grade3 } from './srs';
 
 export type Phase = 'context' | 'cue' | 'prompt' | 'revealed' | 'done';
 export type AudioPhase = 'context' | 'cue' | 'silence' | 'echo';
-
-export interface OrderState {
-  placed: string[];
-  mistakes: number;
-  wrong: string | null;
-  gaveUp: boolean;
-}
 
 export interface SessionState {
   mode: ModeId;
@@ -24,17 +16,13 @@ export interface SessionState {
   /** Сколько слов открыл «Суфлёр» */
   hints: number;
   stepStartedAt: number;
-  /** Оценки этой сессии: индекс шага → id записи журнала; 'pending' — пишется, 'undo' — отменить после записи */
-  graded: Record<number, number | 'pending' | 'undo'>;
-  order: OrderState;
-  typed: string;
+  /** Свои реплики, до которых в этой сессии дошла очередь актёра */
+  seen: string[];
   paused: boolean;
   autoAdvance: boolean;
   echo: boolean;
   /** Аудиопрогон «Вся пьеса»: на своей реплике звук останавливается до «Продолжить» */
   waitOnMine: boolean;
-  /** Номер попытки текущего шага (растёт при повторе после «Не знал») */
-  attempt: number;
   /** Защита от устаревших событий аудио: растёт при каждом переходе */
   token: number;
   /** Что сейчас звучит */
@@ -43,21 +31,33 @@ export interface SessionState {
 
 export type SessionAction =
   | { type: 'start'; steps: Step[]; index: number; now: number; mode?: ModeId }
+  | { type: 'restart'; now: number }
   | { type: 'audioEnded'; token: number; now: number }
   | { type: 'tapCue' }
   | { type: 'hint' }
   | { type: 'reveal' }
-  | { type: 'grade'; rating: Grade3; now: number }
   | { type: 'next'; now: number }
   | { type: 'back'; now: number }
-  | { type: 'gradeSaved'; stepIndex: number; reviewId: number }
+  | { type: 'jump'; index: number; now: number }
   | { type: 'setMode'; mode: ModeId; steps: Step[]; index: number; now: number }
-  | { type: 'orderPick'; pieceId: string }
-  | { type: 'typeInput'; text: string }
   | { type: 'togglePause' }
   | { type: 'proceed'; now: number }
   | { type: 'setOptions'; autoAdvance?: boolean; echo?: boolean; waitOnMine?: boolean }
   | { type: 'replayCue' };
+
+/** Уход с шага: время на шаге, сказана ли своя реплика, шаг вперёд по тексту — для журнала сессии. */
+export interface LeaveEffect {
+  type: 'leave';
+  mode: ModeId;
+  step: Step;
+  /** Следующий шаг при ходе вперёд; null — сессия закончилась */
+  next: Step | null;
+  ms: number;
+  /** Своя реплика дошла до очереди актёра */
+  said: boolean;
+  /** Обычный ход вперёд: «Далее», автопереход. Назад, навигация и смена режима — нет. */
+  forward: boolean;
+}
 
 export type Effect =
   | { type: 'stopAudio' }
@@ -65,21 +65,10 @@ export type Effect =
   | { type: 'resumeAudio' }
   | { type: 'play'; phase: AudioPhase; token: number }
   | { type: 'saveCursor'; stepIndex: number | null }
-  | {
-      type: 'persistGrade';
-      stepIndex: number;
-      step: Step;
-      rating: Grade3;
-      hinted: boolean;
-      durationMs: number;
-      attempt: number;
-    }
-  | { type: 'undoGrade'; reviewId: number }
+  | LeaveEffect
   | { type: 'finished' };
 
 export type Transition = [SessionState, Effect[]];
-
-const emptyOrder = (): OrderState => ({ placed: [], mistakes: 0, wrong: null, gaveUp: false });
 
 export function initialState(mode: ModeId, opts: { autoAdvance: boolean; echo: boolean; waitOnMine?: boolean }): SessionState {
   return {
@@ -90,14 +79,11 @@ export function initialState(mode: ModeId, opts: { autoAdvance: boolean; echo: b
     cueDone: false,
     hints: 0,
     stepStartedAt: 0,
-    graded: {},
-    order: emptyOrder(),
-    typed: '',
+    seen: [],
     paused: false,
     autoAdvance: opts.autoAdvance,
     echo: opts.echo,
     waitOnMine: opts.waitOnMine ?? false,
-    attempt: 0,
     token: 0,
     audio: null,
   };
@@ -108,81 +94,89 @@ export const currentStep = (s: SessionState): Step | undefined => s.steps[s.inde
 /** Аудиопрогон остановился на своей реплике и ждёт «Продолжить». */
 export const awaitsMine = (s: SessionState): boolean => s.mode === 'audio' && s.phase === 'prompt' && s.audio === null;
 
-/** Звучит ли подсказка перед шагом: в монологе — только перед первой частью. */
-export function stepPlaysCue(mode: ModeId, step: Step | undefined): boolean {
-  if (!step || !MODES[mode].playsCue) return false;
-  if (step.kind === 'order') return false;
-  if (step.kind === 'chunk') return step.part === 1;
-  return true;
+/** Сейчас звучит реплика партнёра в «Прогоне: все реплики по очереди». */
+export const onPartner = (s: SessionState): boolean => s.phase !== 'done' && currentStep(s)?.mine === false;
+
+/** Уход с текущего шага; пусто, если шага нет или сессия закончилась. */
+export function leave(s: SessionState, now: number, forward: boolean): LeaveEffect[] {
+  const step = currentStep(s);
+  if (!step || s.phase === 'done') return [];
+  return [
+    {
+      type: 'leave',
+      mode: s.mode,
+      step,
+      next: forward ? (s.steps[s.index + 1] ?? null) : null,
+      ms: Math.max(0, now - s.stepStartedAt),
+      said: step.mine && (s.phase === 'prompt' || s.phase === 'revealed'),
+      forward,
+    },
+  ];
 }
 
-function enterStep(s: SessionState, index: number, now: number, attempt = 0): Transition {
+function enterStep(s: SessionState, index: number, now: number, before: Effect[] = []): Transition {
   const token = s.token + 1;
   if (index >= s.steps.length) {
     return [
       { ...s, index: s.steps.length, phase: 'done', audio: null, token, paused: false },
-      [{ type: 'stopAudio' }, { type: 'saveCursor', stepIndex: null }, { type: 'finished' }],
+      [...before, { type: 'stopAudio' }, { type: 'saveCursor', stepIndex: null }, { type: 'finished' }],
     ];
   }
-  const step = s.steps[index];
-  const plays = stepPlaysCue(s.mode, step);
-  const next: SessionState = {
-    ...s,
-    index,
-    phase: plays ? 'context' : 'prompt',
-    cueDone: false,
-    hints: 0,
-    stepStartedAt: now,
-    order: emptyOrder(),
-    typed: '',
-    attempt,
-    token,
-    paused: false,
-    audio: plays ? 'context' : null,
-  };
-  const effects: Effect[] = [{ type: 'stopAudio' }, { type: 'saveCursor', stepIndex: index }];
-  if (plays) effects.push({ type: 'play', phase: 'context', token });
-  else if (s.mode === 'audio') return enterPrompt(next, effects);
-  return [next, effects];
+  // Каждый шаг начинается с контекста: пустая очередь доигрывается сразу
+  const next: SessionState = { ...s, index, phase: 'context', cueDone: false, hints: 0, stepStartedAt: now, token, paused: false, audio: 'context' };
+  return [next, [...before, { type: 'stopAudio' }, { type: 'saveCursor', stepIndex: index }, { type: 'play', phase: 'context', token }]];
 }
+
+const markSeen = (s: SessionState): string[] => {
+  const id = currentStep(s)?.itemId;
+  return id && !s.seen.includes(id) ? [...s.seen, id] : s.seen;
+};
 
 /** Переход к своей реплике. В аудиопрогоне на ней звучит тишина длиной ≈ реплика × k или прогон ждёт «Продолжить». */
 function enterPrompt(s: SessionState, effects: Effect[] = []): Transition {
   const token = s.token + 1;
+  const seen = markSeen(s);
   if (s.mode === 'audio' && !s.waitOnMine) {
-    return [{ ...s, phase: 'prompt', cueDone: true, token, audio: 'silence' }, [...effects, { type: 'play', phase: 'silence', token }]];
+    return [{ ...s, phase: 'prompt', cueDone: true, token, seen, audio: 'silence' }, [...effects, { type: 'play', phase: 'silence', token }]];
   }
-  return [{ ...s, phase: 'prompt', cueDone: true, token, audio: null }, effects];
+  return [{ ...s, phase: 'prompt', cueDone: true, token, seen, audio: null }, effects];
 }
 
 function enterRevealed(s: SessionState, effects: Effect[] = []): Transition {
   const token = s.token + 1;
-  const withEcho = s.echo && currentStep(s)?.kind !== 'order';
-  return [
-    { ...s, phase: 'revealed', token, audio: withEcho ? 'echo' : null },
-    withEcho ? [...effects, { type: 'stopAudio' }, { type: 'play', phase: 'echo', token }] : [...effects, { type: 'stopAudio' }],
-  ];
+  const next: SessionState = { ...s, phase: 'revealed', token, seen: markSeen(s), audio: s.echo ? 'echo' : null };
+  return [next, s.echo ? [...effects, { type: 'stopAudio' }, { type: 'play', phase: 'echo', token }] : [...effects, { type: 'stopAudio' }]];
 }
 
+const clampIndex = (i: number, steps: Step[]) => Math.min(Math.max(i, 0), steps.length);
+
 export function reduce(s: SessionState, a: SessionAction): Transition {
-  const def = MODES[s.mode];
+  const step = currentStep(s);
   switch (a.type) {
     case 'start':
-      return enterStep({ ...s, mode: a.mode ?? s.mode, steps: a.steps, graded: {} }, Math.min(Math.max(a.index, 0), a.steps.length), a.now);
+      return enterStep({ ...s, mode: a.mode ?? s.mode, steps: a.steps, seen: [] }, clampIndex(a.index, a.steps), a.now);
+
+    case 'restart':
+      if (s.phase === 'done') return [s, []];
+      return enterStep(s, s.index, a.now, leave(s, a.now, false));
 
     case 'setMode':
-      return enterStep({ ...s, mode: a.mode, steps: a.steps, graded: {} }, Math.min(Math.max(a.index, 0), a.steps.length), a.now);
+      return enterStep({ ...s, mode: a.mode, steps: a.steps }, clampIndex(a.index, a.steps), a.now, leave(s, a.now, false));
 
     case 'setOptions':
       return [{ ...s, autoAdvance: a.autoAdvance ?? s.autoAdvance, echo: a.echo ?? s.echo, waitOnMine: a.waitOnMine ?? s.waitOnMine }, []];
 
     case 'audioEnded': {
-      if (a.token !== s.token || s.paused) return [s, []];
+      if (a.token !== s.token || s.paused || !step) return [s, []];
       if (s.audio === 'context') {
         const token = s.token + 1;
         return [{ ...s, phase: 'cue', token, audio: 'cue' }, [{ type: 'play', phase: 'cue', token }]];
       }
       if (s.audio === 'cue') {
+        // Реплика партнёра доиграла — сцена идёт дальше сама
+        if (!step.mine) return enterStep(s, s.index + 1, a.now, leave(s, a.now, true));
+        // Повтор подсказки не прячет уже показанную реплику
+        if (s.phase === 'prompt' || s.phase === 'revealed') return [{ ...s, audio: null }, []];
         if (s.autoAdvance || s.mode === 'audio') return enterPrompt(s);
         return [{ ...s, cueDone: true, audio: null }, []];
       }
@@ -191,31 +185,31 @@ export function reduce(s: SessionState, a: SessionAction): Transition {
           const token = s.token + 1;
           return [{ ...s, phase: 'revealed', token, audio: 'echo' }, [{ type: 'play', phase: 'echo', token }]];
         }
-        return enterStep(s, s.index + 1, a.now);
+        return enterStep(s, s.index + 1, a.now, leave(s, a.now, true));
       }
       if (s.audio === 'echo') {
-        if (s.mode === 'audio') return enterStep(s, s.index + 1, a.now);
+        if (s.mode === 'audio') return enterStep(s, s.index + 1, a.now, leave(s, a.now, true));
         return [{ ...s, audio: null }, []];
       }
       return [s, []];
     }
 
     case 'replayCue': {
-      if (s.phase === 'done' || !stepPlaysCue(s.mode, currentStep(s))) return [s, []];
+      if (s.phase === 'done') return [s, []];
       const token = s.token + 1;
-      // Повтор подсказки не сбрасывает открытые слова и введённый текст
+      // Повтор подсказки не сбрасывает открытые слова
       return [
-        { ...s, token, audio: 'cue', phase: s.phase === 'context' ? 'cue' : s.phase },
+        { ...s, token, paused: false, audio: 'cue', phase: s.phase === 'context' ? 'cue' : s.phase },
         [{ type: 'stopAudio' }, { type: 'play', phase: 'cue', token }],
       ];
     }
 
     case 'tapCue':
-      if (s.phase !== 'context' && s.phase !== 'cue') return [s, []];
+      if (!step?.mine || (s.phase !== 'context' && s.phase !== 'cue')) return [s, []];
       return enterPrompt(s, [{ type: 'stopAudio' }]);
 
     case 'hint': {
-      if (!def.graded || currentStep(s)?.kind === 'order') return [s, []];
+      if (s.mode === 'audio' || !step?.mine) return [s, []];
       if (s.phase === 'context' || s.phase === 'cue') {
         const [p, eff] = enterPrompt(s, [{ type: 'stopAudio' }]);
         return [{ ...p, hints: p.hints + 1 }, eff];
@@ -224,92 +218,34 @@ export function reduce(s: SessionState, a: SessionAction): Transition {
       return [{ ...s, hints: s.hints + 1 }, []];
     }
 
-    case 'reveal': {
-      if (s.mode === 'audio' || !def.graded) return [s, []];
+    case 'reveal':
+      if (s.mode === 'audio' || !step?.mine) return [s, []];
       if (s.phase !== 'context' && s.phase !== 'cue' && s.phase !== 'prompt') return [s, []];
-      const step = currentStep(s);
-      const order = step?.kind === 'order' ? { ...s.order, gaveUp: s.order.placed.length < step.pieces.length } : s.order;
-      return enterRevealed({ ...s, order });
-    }
-
-    case 'grade': {
-      if (s.phase !== 'revealed' || !def.graded) return [s, []];
-      const step = currentStep(s);
-      if (!step) return [s, []];
-      const hinted = s.hints > 0;
-      const rating = def.affectsFsrs ? capGrade(a.rating, hinted) : a.rating;
-      const persist: Effect = {
-        type: 'persistGrade',
-        stepIndex: s.index,
-        step,
-        rating,
-        hinted,
-        durationMs: Math.max(0, a.now - s.stepStartedAt),
-        attempt: s.attempt,
-      };
-      const graded = { ...s.graded, [s.index]: 'pending' as const };
-      if (def.repeatOnAgain && rating === 'again') {
-        const [n, eff] = enterStep({ ...s, graded }, s.index, a.now, s.attempt + 1);
-        return [n, [persist, ...eff]];
-      }
-      const [n, eff] = enterStep({ ...s, graded }, s.index + 1, a.now);
-      return [n, [persist, ...eff]];
-    }
-
-    case 'gradeSaved': {
-      const cur = s.graded[a.stepIndex];
-      if (cur === 'undo') {
-        const graded = { ...s.graded };
-        delete graded[a.stepIndex];
-        return [{ ...s, graded }, [{ type: 'undoGrade', reviewId: a.reviewId }]];
-      }
-      return [{ ...s, graded: { ...s.graded, [a.stepIndex]: a.reviewId } }, []];
-    }
+      return enterRevealed(s);
 
     case 'next': {
-      if (s.phase === 'done') return [s, []];
-      if (s.mode !== 'audio' && (s.phase === 'context' || s.phase === 'cue')) return enterPrompt(s, [{ type: 'stopAudio' }]);
-      // В «Прогоне с буквами» «Далее» сначала открывает свою реплику, затем ведёт сцену дальше
-      if (s.mode === 'run' && s.phase === 'prompt') return enterRevealed(s);
-      return enterStep(s, s.index + 1, a.now);
+      if (s.phase === 'done' || !step) return [s, []];
+      // На своей реплике «Далее» пропускает звук → открывает реплику → ведёт дальше
+      if (step.mine && s.mode !== 'audio') {
+        if (s.phase === 'context' || s.phase === 'cue') return enterPrompt(s, [{ type: 'stopAudio' }]);
+        if (s.phase === 'prompt') return enterRevealed(s);
+      }
+      return enterStep(s, s.index + 1, a.now, leave(s, a.now, true));
     }
 
     case 'back': {
-      const target = Math.max(0, (s.phase === 'done' ? s.steps.length : s.index) - 1);
       if (!s.steps.length) return [s, []];
-      const graded = { ...s.graded };
-      const effects: Effect[] = [];
-      const g = graded[target];
-      if (typeof g === 'number') {
-        effects.push({ type: 'undoGrade', reviewId: g });
-        delete graded[target];
-      } else if (g === 'pending') {
-        graded[target] = 'undo';
-      }
-      const [n, eff] = enterStep({ ...s, graded }, target, a.now);
-      return [n, [...effects, ...eff]];
+      const target = Math.max(0, (s.phase === 'done' ? s.steps.length : s.index) - 1);
+      return enterStep(s, target, a.now, leave(s, a.now, false));
     }
 
-    case 'orderPick': {
-      const step = currentStep(s);
-      if (step?.kind !== 'order' || s.phase !== 'prompt') return [s, []];
-      if (s.order.placed.includes(a.pieceId)) return [s, []];
-      const expected = step.pieces[s.order.placed.length];
-      if (expected?.id !== a.pieceId) {
-        return [{ ...s, order: { ...s.order, mistakes: s.order.mistakes + 1, wrong: a.pieceId } }, []];
-      }
-      const order = { ...s.order, placed: [...s.order.placed, a.pieceId], wrong: null };
-      if (order.placed.length === step.pieces.length) return enterRevealed({ ...s, order });
-      return [{ ...s, order }, []];
-    }
-
-    case 'typeInput':
-      if (s.phase === 'done' || s.phase === 'revealed') return [s, []];
-      return [{ ...s, typed: a.text, ...(s.phase !== 'prompt' ? { phase: 'prompt' as const, audio: null, token: s.token + 1 } : {}) }, s.phase !== 'prompt' ? [{ type: 'stopAudio' }] : []];
+    case 'jump':
+      if (!s.steps.length) return [s, []];
+      return enterStep(s, Math.min(Math.max(a.index, 0), s.steps.length - 1), a.now, leave(s, a.now, false));
 
     case 'proceed': {
       if (!awaitsMine(s)) return [s, []];
-      if (!s.echo) return enterStep(s, s.index + 1, a.now);
+      if (!s.echo) return enterStep(s, s.index + 1, a.now, leave(s, a.now, true));
       const token = s.token + 1;
       return [{ ...s, phase: 'revealed', token, audio: 'echo' }, [{ type: 'play', phase: 'echo', token }]];
     }
@@ -318,10 +254,4 @@ export function reduce(s: SessionState, a: SessionAction): Transition {
       if (s.phase === 'done') return [s, []];
       return s.paused ? [{ ...s, paused: false }, [{ type: 'resumeAudio' }]] : [{ ...s, paused: true }, [{ type: 'pauseAudio' }]];
   }
-}
-
-/** Оценка для головоломки «Порядок» по числу ошибок. */
-export function orderSuggestion(o: OrderState): Grade3 {
-  if (o.gaveUp || o.mistakes > 2) return 'again';
-  return o.mistakes === 0 ? 'good' : 'hard';
 }

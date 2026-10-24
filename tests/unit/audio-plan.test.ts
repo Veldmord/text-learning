@@ -4,11 +4,11 @@ import {
   directionUnits,
   echoUnits,
   estimateMs,
+  itemPlan,
   lineDurationMs,
   lineUnits,
   NARRATOR,
   playPlan,
-  readThroughUnits,
   scenePlan,
   SENTENCE_GAP_MS,
   stepPlan,
@@ -18,7 +18,7 @@ import { getLine } from '../../src/engine/queries';
 import type { Direction } from '../../src/engine/types';
 import { miniPlay } from './fixtures';
 
-const settings: PlanSettings = { cueLength: 'full', cueWords: 3, directions: 'text', context: 1, pauseMs: 300 };
+const settings: PlanSettings = { cueLength: 'full', cueWords: 3, directions: 'text', context: 1, pauseMs: 300, runFlow: 'mine' };
 
 describe('озвучка реплики', () => {
   const { index } = miniPlay();
@@ -81,7 +81,7 @@ describe('план подсказки', () => {
   });
 });
 
-describe('план прогона с буквами', () => {
+describe('план прогона: сразу к моим репликам', () => {
   const { index } = miniPlay();
 
   it('видна сцена с начала, звучит целиком всё после моей прошлой реплики', () => {
@@ -115,9 +115,52 @@ describe('план прогона с буквами', () => {
     expect(silent.visible).toHaveLength(4);
   });
 
-  it('план шага выбирается по режиму', () => {
+  it('план шага выбирается по режиму и ходу прогона', () => {
     expect(stepPlan('run', index, 'L0004', ['a'], settings)).toEqual(scenePlan(index, 'L0004', ['a'], settings));
-    expect(stepPlan('letters', index, 'L0004', ['a'], settings)).toEqual(cuePlan(index, 'L0004', ['a'], settings));
+    const all = { ...settings, runFlow: 'all' as const };
+    expect(stepPlan('run', index, 'L0004', ['a'], all)).toEqual(itemPlan(index, 'L0004', ['a'], all));
+    expect(stepPlan('letters', index, 'L0004', ['a'], all)).toEqual(cuePlan(index, 'L0004', ['a'], all));
+    expect(stepPlan('audio', index, 'L0004', ['a'], settings)).toEqual(cuePlan(index, 'L0004', ['a'], settings));
+  });
+});
+
+describe('план прогона: все реплики по очереди', () => {
+  const { index } = miniPlay();
+  const all: PlanSettings = { ...settings, runFlow: 'all' };
+
+  it('реплика партнёра звучит целиком, видна сцена до неё', () => {
+    const p = itemPlan(index, 'L0002', ['a'], all);
+    expect(p.visible.map((i) => i.id)).toEqual(['D0001', 'L0001']);
+    expect(p.context).toEqual([]);
+    expect(p.cue.map((u) => u.sentenceId)).toEqual(['S0002.1', 'S0002.2']);
+    expect(p.cue[p.cue.length - 1]!.pauseAfterMs).toBe(300);
+    expect(p.cueLine?.id).toBe('L0002');
+  });
+
+  it('ремарки перед репликой звучат голосом по настройке; на своей реплике — только они', () => {
+    const p = itemPlan(index, 'L0003', ['a'], { ...all, directions: 'voice' });
+    expect(p.context.map((u) => u.itemId)).toEqual(['D0002']);
+    expect(p.cue.map((u) => u.itemId)).toEqual(['L0003']);
+    const first = itemPlan(index, 'L0001', ['a'], { ...all, directions: 'voice' });
+    expect(new Set(first.context.map((u) => u.itemId))).toEqual(new Set(['D0001']));
+    expect(first.context.every((u) => u.speakerId === NARRATOR)).toBe(true);
+    expect(first.cue).toEqual([]);
+    expect(first.cueLine).toBeNull();
+  });
+
+  it('на своей реплике подсказка — прозвучавшая перед ней реплика партнёра, без повтора звука', () => {
+    const p = itemPlan(index, 'L0004', ['a'], all);
+    expect(p.cueLine?.id).toBe('L0003');
+    expect([...p.context, ...p.cue]).toEqual([]);
+    expect(p.visible.map((i) => i.id)).toEqual(['D0001', 'L0001', 'L0002', 'D0002', 'L0003']);
+    expect(itemPlan(index, 'L0009', ['a', 'b'], all).cueLine).toBeNull();
+  });
+
+  it('ремарки «пропускать» скрыты, «только текст» — без звука', () => {
+    expect(itemPlan(index, 'L0003', ['a'], { ...all, directions: 'skip' }).visible.map((i) => i.id)).toEqual(['L0001', 'L0002']);
+    const silent = itemPlan(index, 'L0003', ['a'], { ...all, cueLength: 'textOnly', directions: 'voice' });
+    expect([...silent.context, ...silent.cue]).toEqual([]);
+    expect(silent.cueLine?.id).toBe('L0003');
   });
 });
 
@@ -148,25 +191,16 @@ describe('план аудиопрогона по всей пьесе', () => {
   });
 });
 
-describe('длительность и читка', () => {
+describe('длительность и эхо', () => {
   const { index } = miniPlay();
   const l1 = getLine(index, 'L0001')!;
 
   it('по клипам манифеста, иначе по темпу 14 символов в секунду', () => {
     expect(estimateMs('a'.repeat(14))).toBe(1000);
     expect(lineDurationMs(l1, (id) => (id === 'S0001.1' ? 900 : undefined))).toBe(900 + estimateMs('Я ждала.') + 2 * SENTENCE_GAP_MS);
-    expect(lineDurationMs(l1, () => 100, [1])).toBe(100 + SENTENCE_GAP_MS);
   });
 
-  it('эхо своей реплики и части монолога', () => {
+  it('эхо своей реплики — целиком', () => {
     expect(echoUnits(l1).map((u) => u.sentenceId)).toEqual(['S0001.1', 'S0001.2']);
-    expect(echoUnits(l1, [1]).map((u) => u.sentenceId)).toEqual(['S0001.2']);
-  });
-
-  it('читка сцены с выбранного места', () => {
-    const u = readThroughUnits(index, 'L0002', { directions: 'voice', pauseMs: 200 });
-    expect(new Set(u.map((x) => x.itemId))).toEqual(new Set(['L0002', 'D0002', 'L0003', 'L0004']));
-    expect(readThroughUnits(index, 'L0002', { directions: 'skip', pauseMs: 0 }).some((x) => x.speakerId === NARRATOR)).toBe(false);
-    expect(readThroughUnits(index, 'X', { directions: 'skip', pauseMs: 0 })).toEqual([]);
   });
 });

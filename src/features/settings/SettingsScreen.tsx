@@ -1,4 +1,4 @@
-// Настройки: отображение (FR-15), озвучка (FR-07), дата премьеры (FR-09), данные и кэш аудио.
+// Настройки: отображение (FR-15), озвучка (FR-07), ход прогона, данные и кэш аудио.
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { cachedAudioCount, pruneAudioCache } from '../../audio/prefetch';
@@ -7,6 +7,7 @@ import { repo, requestPersist } from '../../app/services';
 import { BASE_URL, useSettings } from '../../app/store';
 import { Segmented, TopBar } from '../../app/ui';
 import type { Theme } from '../../storage/settings';
+import { RunFlowSetting } from '../session/ModeSettings';
 import { DirectionsSetting, VoiceSettings } from './VoiceSettings';
 
 function StorageStatus() {
@@ -90,22 +91,9 @@ export default function SettingsScreen() {
           <VoiceSettings />
         </section>
 
-        <section className="card" aria-labelledby="srs-title">
-          <h2 id="srs-title">Интервальное повторение</h2>
-          <div className="field">
-            <label className="field__label" htmlFor="premiere">
-              Дата премьеры
-            </label>
-            <div className="row">
-              <input id="premiere" className="input" type="date" value={s.premiere ?? ''} onChange={(e) => s.update({ premiere: e.target.value || null })} style={{ maxWidth: 220 }} />
-              {s.premiere && (
-                <button className="btn btn--ghost btn--small" type="button" onClick={() => s.update({ premiere: null })}>
-                  Очистить
-                </button>
-              )}
-            </div>
-            <span className="field__hint">Если указать, интервалы повторения не выйдут за премьеру — к ней роль будет свежей в памяти.</span>
-          </div>
+        <section className="card" aria-labelledby="run-title">
+          <h2 id="run-title">Прогон с буквами</h2>
+          <RunFlowSetting />
         </section>
 
         <BackupPanel />
@@ -131,7 +119,7 @@ export default function SettingsScreen() {
               className="btn btn--small btn--ghost"
               type="button"
               onClick={() => {
-                if (window.confirm('Удалить все оценки, расписание повторений и позиции? Заметки останутся. Сначала лучше сохранить резервную копию.')) {
+                if (window.confirm('Удалить историю тренировок, пройденные сцены и позиции? Избранное останется. Сначала лучше сохранить резервную копию.')) {
                   void repo.resetProgress().then(() => setMessage('Прогресс сброшен.'));
                 }
               }}

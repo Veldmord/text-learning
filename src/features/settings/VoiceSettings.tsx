@@ -41,6 +41,7 @@ export function VoiceSettings({ compact = false }: { compact?: boolean }) {
           { value: 'lastWords', label: `Последние ${s.cueWords} слов` },
           { value: 'textOnly', label: 'Только текст' },
         ]}
+        hint="В «Первых буквах» и аудиопрогоне. В «Прогоне с буквами» реплики звучат целиком, «Только текст» выключает звук."
       />
       {s.cueLength === 'lastWords' && <RangeField label="Слов в подсказке" min={5} max={20} step={1} value={s.cueWords} onChange={(v) => s.update({ cueWords: v })} />}
       <DirectionsSetting />
@@ -53,10 +54,10 @@ export function VoiceSettings({ compact = false }: { compact?: boolean }) {
         onChange={(v) => s.update({ context: v })}
         hint={s.context === 0 ? 'Без звука: подсказка только текстом' : s.context === 1 ? 'Звучит только реплика-подсказка' : undefined}
       />
-      <Switch label="Автопереход" hint="После конца подсказки сразу показать скрытую реплику" checked={s.autoAdvance} onChange={(v) => s.update({ autoAdvance: v })} />
+      <Switch label="Автопереход" hint="После конца подсказки сразу перейти к своей реплике" checked={s.autoAdvance} onChange={(v) => s.update({ autoAdvance: v })} />
       <RangeField label="Пауза между репликами" min={0} max={1000} step={100} value={s.pauseMs} format={(v) => `${(v / 1000).toLocaleString('ru-RU')} с`} onChange={(v) => s.update({ pauseMs: v })} />
-      <Switch label="«Эхо»" hint="После «Показать» озвучить свою реплику" checked={s.echo} onChange={(v) => s.update({ echo: v })} />
-      <Switch label="Пропускать сцены без моей роли" hint="В читке такие сцены свёрнуты" checked={s.skipScenesWithoutRole} onChange={(v) => s.update({ skipScenesWithoutRole: v })} />
+      <Switch label="«Эхо»" hint="После «Открыть» озвучить свою реплику" checked={s.echo} onChange={(v) => s.update({ echo: v })} />
+      <Switch label="Пропускать сцены без моей роли" hint="В прогонах такие сцены не звучат, в тексте свёрнуты" checked={s.skipScenesWithoutRole} onChange={(v) => s.update({ skipScenesWithoutRole: v })} />
       <RangeField
         label="Пауза в аудиопрогоне"
         min={0.8}

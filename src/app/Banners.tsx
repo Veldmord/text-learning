@@ -32,11 +32,11 @@ export function Banners() {
   const lastBackupAt = useSettings((s) => s.lastBackupAt);
   const [installDismissed, setInstallDismissed] = useState(() => readLocal(INSTALL_DISMISS_KEY) === '1');
   const [snoozeUntil, setSnoozeUntil] = useState(() => Number(readLocal(BACKUP_SNOOZE_KEY) ?? 0));
-  const newReviews = useLiveQuery(() => repo.countReviewsSince(lastBackupAt ?? 0), [lastBackupAt], 0);
+  const newSessions = useLiveQuery(() => repo.countSessionsSince(lastBackupAt ?? 0), [lastBackupAt], 0);
 
   if (sessionActive) return null;
   const now = Date.now();
-  const backupDue = newReviews > 0 && now - (lastBackupAt ?? 0) > WEEK && now > snoozeUntil;
+  const backupDue = newSessions > 0 && now - (lastBackupAt ?? 0) > WEEK && now > snoozeUntil;
   const showInstall = isIos() && !isStandalone() && !installDismissed;
 
   return (
@@ -73,7 +73,7 @@ export function Banners() {
       )}
       {backupDue && (
         <div className="banner" role="note">
-          <p>С последней резервной копии появилось {newReviews} новых оценок. Сохраните копию прогресса в файл.</p>
+          <p>С последней резервной копии было тренировок: {newSessions}. Сохраните копию прогресса в файл.</p>
           <div className="banner__actions">
             <Link className="btn btn--primary btn--small" to="/settings#backup">
               Сохранить

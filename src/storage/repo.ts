@@ -1,5 +1,5 @@
 // Операции над данными пользователя. Реализует StorePort для SessionRunner.
-import type { CardRow, CursorRow, ErrorRow, NoteRow, ReviewRow } from '../engine/model';
+import type { CursorRow, ErrorRow, SessionRow } from '../engine/model';
 import type { StorePort } from '../engine/session-runner';
 import type { LineId } from '../engine/types';
 import type { TextLearningDB } from './db';
@@ -9,31 +9,26 @@ export const ERROR_LOG_LIMIT = 200;
 export class Repo implements StorePort {
   constructor(private readonly db: TextLearningDB) {}
 
-  getCard(lineId: LineId): Promise<CardRow | undefined> {
-    return this.db.cards.get(lineId);
+  async saveSession(row: SessionRow): Promise<void> {
+    await this.db.sessions.put(row);
   }
 
-  async getCards(): Promise<Map<string, CardRow>> {
-    const rows = await this.db.cards.toArray();
-    return new Map(rows.map((c) => [c.lineId, c]));
+  /** Сессии по порядку начала; с rolesKey — только этой связки ролей. */
+  async sessions(rolesKey?: string): Promise<SessionRow[]> {
+    const rows = rolesKey === undefined ? await this.db.sessions.toArray() : await this.db.sessions.where('rolesKey').equals(rolesKey).toArray();
+    return rows.sort((a, b) => a.startedAt - b.startedAt);
   }
 
-  commitReview(review: ReviewRow, card: CardRow): Promise<number> {
-    return this.db.transaction('rw', this.db.cards, this.db.reviews, async () => {
-      await this.db.cards.put(card);
-      const { id: _id, ...row } = review;
-      return (await this.db.reviews.add(row)) as number;
-    });
+  countSessionsSince(ts: number): Promise<number> {
+    return this.db.sessions.where('updatedAt').above(ts).count();
   }
 
-  undoReview(reviewId: number): Promise<void> {
-    return this.db.transaction('rw', this.db.cards, this.db.reviews, async () => {
-      const review = await this.db.reviews.get(reviewId);
-      if (!review) return;
-      if (review.prevCard) await this.db.cards.put(review.prevCard);
-      else await this.db.cards.delete(review.lineId);
-      await this.db.reviews.delete(reviewId);
-    });
+  async favorites(): Promise<Set<string>> {
+    return new Set((await this.db.favorites.toArray()).filter((f) => f.on).map((f) => f.lineId));
+  }
+
+  async setFavorite(lineId: LineId, on: boolean): Promise<void> {
+    await this.db.favorites.put({ lineId, on, updatedAt: Date.now() });
   }
 
   async saveCursor(key: string, itemId: string | null): Promise<void> {
@@ -47,38 +42,6 @@ export class Repo implements StorePort {
 
   allCursors(): Promise<CursorRow[]> {
     return this.db.cursors.toArray();
-  }
-
-  allReviews(): Promise<ReviewRow[]> {
-    return this.db.reviews.orderBy('ts').toArray();
-  }
-
-  async countReviewsSince(ts: number): Promise<number> {
-    return this.db.reviews.where('ts').above(ts).count();
-  }
-
-  getNote(lineId: LineId): Promise<NoteRow | undefined> {
-    return this.db.notes.get(lineId);
-  }
-
-  async allNotes(): Promise<Map<string, NoteRow>> {
-    const rows = await this.db.notes.toArray();
-    return new Map(rows.map((n) => [n.lineId, n]));
-  }
-
-  async saveNote(lineId: LineId, text: string): Promise<void> {
-    const trimmed = text.trim();
-    if (!trimmed) await this.db.notes.delete(lineId);
-    else await this.db.notes.put({ lineId, text: trimmed, updatedAt: Date.now() });
-  }
-
-  async markSceneRead(sceneId: string): Promise<void> {
-    const now = Date.now();
-    await this.db.sceneReads.put({ sceneId, readAt: now, updatedAt: now });
-  }
-
-  async readScenes(): Promise<Set<string>> {
-    return new Set((await this.db.sceneReads.toArray()).map((r) => r.sceneId));
   }
 
   async getMeta<T>(key: string): Promise<T | undefined> {
@@ -105,9 +68,11 @@ export class Repo implements StorePort {
     return this.db.errors.orderBy('id').reverse().limit(limit).toArray();
   }
 
+  /** Сбросить журнал сессий, позиции и данные прежних версий. Избранное остаётся. */
   async resetProgress(): Promise<void> {
-    await this.db.transaction('rw', [this.db.cards, this.db.reviews, this.db.cursors, this.db.sceneReads], async () => {
-      await Promise.all([this.db.cards.clear(), this.db.reviews.clear(), this.db.cursors.clear(), this.db.sceneReads.clear()]);
+    const { sessions, cursors, cards, reviews, sceneReads } = this.db;
+    await this.db.transaction('rw', [sessions, cursors, cards, reviews, sceneReads], async () => {
+      await Promise.all([sessions.clear(), cursors.clear(), cards.clear(), reviews.clear(), sceneReads.clear()]);
     });
   }
 }

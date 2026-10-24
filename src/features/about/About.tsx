@@ -12,7 +12,6 @@ const LIBRARIES: [string, string][] = [
   ['React, React Router', 'MIT'],
   ['Zustand', 'MIT'],
   ['Dexie', 'Apache-2.0'],
-  ['ts-fsrs', 'MIT'],
   ['Vite, vite-plugin-pwa, Workbox', 'MIT'],
 ];
 
@@ -31,8 +30,8 @@ export default function About() {
         <section className="card">
           <h2>Учить текст</h2>
           <p>
-            Тренажёр роли для труппы: пьеса {index.play.author}, «{index.play.title}». Подсказки партнёров, интервальное повторение и режимы запоминания — по исследованиям
-            того, как актёры учат текст.
+            Тренажёр роли для труппы: пьеса {index.play.author}, «{index.play.title}». Текст с подсвеченной ролью, прогон сцены с первыми буквами своих реплик и аудиопрогон
+            в наушниках — по практике того, как актёры учат текст.
           </p>
           <p className="small muted">
             Версия {buildLabel()}. Исходный код: <a href={REPO_URL}>{REPO_URL.replace('https://', '')}</a>.

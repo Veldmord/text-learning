@@ -1,8 +1,8 @@
-// FR-03. Диапазон: вся роль / действие / сцены / от реплики до реплики / только слабые.
+// FR-03. Диапазон: вся роль / действие / сцены / от реплики до реплики.
 import { useId } from 'react';
 import { lineSpeech, myLinesInScope, type PlayIndex, type Scope, ALL_SCOPE } from '../../engine/queries';
 import type { LineId } from '../../engine/types';
-import { Segmented, Switch } from '../../app/ui';
+import { preview, Segmented } from '../../app/ui';
 
 export type ScopeKind = 'all' | 'act' | 'scenes' | 'range';
 
@@ -14,8 +14,6 @@ export function scopeKind(scope: Scope): ScopeKind {
   return 'range';
 }
 
-const preview = (text: string) => (text.length > 48 ? `${text.slice(0, 48)}…` : text);
-
 export function ScopePicker({ index, roles, scope, onChange }: { index: PlayIndex; roles: string[]; scope: Scope; onChange: (s: Scope) => void }) {
   const kind = scopeKind(scope);
   const myLines = myLinesInScope(index, roles, ALL_SCOPE);
@@ -25,16 +23,15 @@ export function ScopePicker({ index, roles, scope, onChange }: { index: PlayInde
   const act = scope.parts[0]?.kind === 'act' ? scope.parts[0].n : null;
 
   const setKind = (k: ScopeKind) => {
-    const weak = scope.weak;
-    if (k === 'all') onChange({ parts: [], weak });
-    else if (k === 'act') onChange({ parts: [{ kind: 'act', n: 1 }], weak });
+    if (k === 'all') onChange({ parts: [] });
+    else if (k === 'act') onChange({ parts: [{ kind: 'act', n: 1 }] });
     else if (k === 'scenes') {
       const first = index.scenes.find((s) => s.scene.characterIds.some((c) => roles.includes(c)));
-      onChange({ parts: first ? [{ kind: 'scene', id: first.scene.id }] : [], weak });
+      onChange({ parts: first ? [{ kind: 'scene', id: first.scene.id }] : [] });
     } else {
       const a = myLines[0]?.id;
       const b = myLines[Math.min(myLines.length - 1, 9)]?.id;
-      onChange({ parts: a && b ? [{ kind: 'range', from: a, to: b }] : [], weak });
+      onChange({ parts: a && b ? [{ kind: 'range', from: a, to: b }] : [] });
     }
   };
 
@@ -55,7 +52,7 @@ export function ScopePicker({ index, roles, scope, onChange }: { index: PlayInde
         <Segmented<number>
           label="Действие"
           value={act ?? 1}
-          onChange={(n) => onChange({ parts: [{ kind: 'act', n }], weak: scope.weak })}
+          onChange={(n) => onChange({ parts: [{ kind: 'act', n }] })}
           options={index.play.acts.map((a) => ({ value: a.n, label: a.title }))}
         />
       )}
@@ -70,11 +67,11 @@ export function ScopePicker({ index, roles, scope, onChange }: { index: PlayInde
               id={fromId}
               className="input"
               value={range.from}
-              onChange={(e) => onChange({ parts: [{ kind: 'range', from: e.target.value as LineId, to: range.to }], weak: scope.weak })}
+              onChange={(e) => onChange({ parts: [{ kind: 'range', from: e.target.value as LineId, to: range.to }] })}
             >
               {myLines.map((l) => (
                 <option key={l.id} value={l.id}>
-                  {l.id} · {preview(lineSpeech(l))}
+                  {l.id} · {preview(lineSpeech(l), 48)}
                 </option>
               ))}
             </select>
@@ -87,18 +84,17 @@ export function ScopePicker({ index, roles, scope, onChange }: { index: PlayInde
               id={toId}
               className="input"
               value={range.to}
-              onChange={(e) => onChange({ parts: [{ kind: 'range', from: range.from, to: e.target.value as LineId }], weak: scope.weak })}
+              onChange={(e) => onChange({ parts: [{ kind: 'range', from: range.from, to: e.target.value as LineId }] })}
             >
               {myLines.map((l) => (
                 <option key={l.id} value={l.id}>
-                  {l.id} · {preview(lineSpeech(l))}
+                  {l.id} · {preview(lineSpeech(l), 48)}
                 </option>
               ))}
             </select>
           </div>
         </div>
       )}
-      <Switch label="Только слабые" hint="Реплики, у которых подошёл срок повторения или прогноз ниже 90 %" checked={scope.weak} onChange={(weak) => onChange({ ...scope, weak })} />
     </section>
   );
 }

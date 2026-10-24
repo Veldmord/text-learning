@@ -1,5 +1,5 @@
 // Связка SessionRunner с React: создание, загрузка шагов и курсора, снимок состояния, настройки.
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { AudioRunSpan } from '../../engine/audio-plan';
 import type { ModeId } from '../../engine/modes';
 import { buildSteps, type Step } from '../../engine/modes/steps';
@@ -17,12 +17,12 @@ const runnerSettings = (): RunnerSettings => {
     directions: s.directions,
     context: s.context,
     pauseMs: s.pauseMs,
+    runFlow: s.runFlow,
     autoAdvance: s.autoAdvance,
     echo: s.echo,
     audioRunK: s.audioRunK,
     audioRun: s.audioRun,
     skipScenesWithoutRole: s.skipScenesWithoutRole,
-    premiere: s.premiere,
   };
 };
 
@@ -30,19 +30,31 @@ export interface SessionHandle {
   runner: SessionRunner;
   /** Шаги построены, курсор прочитан */
   ready: boolean;
-  /** Сессия запущена кнопкой «Начать» */
+  /** Сессия запущена кнопкой «Начать» или выбором места */
   started: boolean;
-  start: () => void;
+  /** Начать с реплики `fromItemId`, по умолчанию — с места остановки */
+  start: (fromItemId?: string | null) => void;
   switchMode: (mode: ModeId) => Promise<void>;
   /** Вариант аудиопрогона меняется прямо в режиме: текущая реплика начинается заново */
   setAudioRun: (audioRun: AudioRunSpan) => void;
   steps: Step[];
-  startedAt: number;
+  /** Откуда начнётся сессия: место из ссылки или где актёр остановился */
+  resumeItemId: string | undefined;
   /** Текущий режим (до старта — выбранный, после — режим раннера) */
   mode: ModeId;
 }
 
-export function useSession(index: PlayIndex, roles: string[], scope: Scope, scopeKey: string, initialMode: ModeId): SessionHandle {
+/** Звук на iOS разблокируется только в обработчике жеста — вызываем до старта сессии. */
+function unlockAudio() {
+  try {
+    audioEngine().unlock();
+  } catch (e) {
+    // Без разблокировки звука тренировка всё равно идёт: текст и голос браузера
+    reportError(e, 'audio');
+  }
+}
+
+export function useSession(index: PlayIndex, roles: string[], scope: Scope, scopeKey: string, initialMode: ModeId, at: string | null): SessionHandle {
   const key = rolesKey(roles);
   // Раннер живёт, пока не сменились роли или диапазон; смена режима — на лету (FR-04)
   const runner = useMemo(
@@ -56,7 +68,7 @@ export function useSession(index: PlayIndex, roles: string[], scope: Scope, scop
           store: repo,
           settings: runnerSettings,
           clipMs,
-          onGraded: () => void requestPersist(),
+          onSaved: () => void requestPersist(),
           onError: (e) => reportError(e, 'session'),
         },
         initialMode,
@@ -67,9 +79,14 @@ export function useSession(index: PlayIndex, roles: string[], scope: Scope, scop
   const [ready, setReady] = useState(false);
   const [started, setStarted] = useState(false);
   const [steps, setSteps] = useState<Step[]>([]);
-  const [resumeLineId, setResumeLineId] = useState<string | undefined>();
-  const [startedAt] = useState(() => Date.now());
+  const [resumeItemId, setResumeItemId] = useState<string | undefined>();
   const [mode, setMode] = useState<ModeId>(initialMode);
+  const runFlow = useSettings((s) => s.runFlow);
+  const skipScenesWithoutRole = useSettings((s) => s.skipScenesWithoutRole);
+  const build = useCallback(
+    (m: ModeId) => buildSteps({ index, mode: m, roles, scope, runFlow: getSettings().runFlow, skipScenesWithoutRole: getSettings().skipScenesWithoutRole }),
+    [index, roles, scope],
+  );
 
   useEffect(() => {
     runner.revive();
@@ -81,12 +98,11 @@ export function useSession(index: PlayIndex, roles: string[], scope: Scope, scop
     setReady(false);
     setStarted(false);
     (async () => {
-      const cards = await repo.getCards();
-      const built = buildSteps({ index, mode: initialMode, roles, scope, cards, now: Date.now() });
-      const cursor = await repo.getCursor(cursorKey(key, initialMode, scopeKey));
+      const built = build(initialMode);
+      const cursor = at ? undefined : await repo.getCursor(cursorKey(key, initialMode, scopeKey));
       if (cancelled) return;
       setSteps(built);
-      setResumeLineId(cursor?.itemId);
+      setResumeItemId(at ?? cursor?.itemId);
       setReady(true);
     })().catch((e: unknown) => reportError(e, 'session'));
     return () => {
@@ -95,27 +111,37 @@ export function useSession(index: PlayIndex, roles: string[], scope: Scope, scop
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runner]);
 
-  const start = useCallback(() => {
-    try {
-      audioEngine().unlock();
-    } catch (e) {
-      // Без разблокировки звука тренировка всё равно идёт: текст и голос браузера
-      reportError(e, 'audio');
+  // Ход прогона и пропуск сцен меняют набор шагов: пересобираем на лету, позиция сохраняется
+  const firstBuild = useRef(true);
+  useEffect(() => {
+    if (firstBuild.current) {
+      firstBuild.current = false;
+      return;
     }
-    runner.start(steps, resumeLineId, mode);
-    setStarted(true);
-  }, [runner, steps, resumeLineId, mode]);
+    const built = build(mode);
+    setSteps(built);
+    if (started) runner.setMode(mode, built);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runFlow, skipScenesWithoutRole]);
+
+  const start = useCallback(
+    (fromItemId?: string | null) => {
+      unlockAudio();
+      runner.start(steps, fromItemId === undefined ? resumeItemId : fromItemId, mode);
+      setStarted(true);
+    },
+    [runner, steps, resumeItemId, mode],
+  );
 
   const switchMode = useCallback(
-    async (mode: ModeId) => {
-      const cards = await repo.getCards();
-      const built = buildSteps({ index, mode, roles, scope, cards, now: Date.now() });
+    async (next: ModeId) => {
+      const built = build(next);
       setSteps(built);
-      setMode(mode);
-      if (started) runner.setMode(mode, built);
-      else setResumeLineId((await repo.getCursor(cursorKey(key, mode, scopeKey)))?.itemId);
+      setMode(next);
+      if (started) runner.setMode(next, built);
+      else setResumeItemId((await repo.getCursor(cursorKey(key, next, scopeKey)))?.itemId);
     },
-    [index, roles, scope, key, scopeKey, runner, started],
+    [build, key, scopeKey, runner, started],
   );
 
   // Автопереход, «эхо» и остановка на своей реплике применяются сразу, без перезапуска сессии
@@ -135,7 +161,7 @@ export function useSession(index: PlayIndex, roles: string[], scope: Scope, scop
     [runner, started],
   );
 
-  return { runner, ready, started, start, switchMode, setAudioRun, steps, startedAt, mode };
+  return { runner, ready, started, start, switchMode, setAudioRun, steps, resumeItemId, mode };
 }
 
 export function useRunnerState(runner: SessionRunner) {

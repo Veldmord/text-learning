@@ -1,18 +1,23 @@
-// IndexedDB через Dexie: прогресс, журнал, заметки, курсоры. Только данные, без бизнес-правил (раздел 8.2).
-import Dexie, { type EntityTable } from 'dexie';
-import type { CardRow, CursorRow, ErrorRow, MetaRow, NoteRow, ReviewRow, SceneReadRow } from '../engine/model';
+// IndexedDB через Dexie: журнал сессий, избранное, курсоры. Только данные, без бизнес-правил (раздел 8.2).
+import Dexie, { type EntityTable, type Table } from 'dexie';
+import type { CursorRow, ErrorRow, FavoriteRow, MetaRow, SessionRow } from '../engine/model';
 import { applyMigrations } from './migrations';
 
 export const DB_NAME = 'text-learning';
 
+/** Запись таблиц версии 1, которые больше не читаются (оценки, заметки, прочитанные сцены). */
+export type LegacyRow = Record<string, unknown>;
+
 export class TextLearningDB extends Dexie {
-  cards!: EntityTable<CardRow, 'lineId'>;
-  reviews!: EntityTable<ReviewRow, 'id'>;
-  notes!: EntityTable<NoteRow, 'lineId'>;
+  sessions!: EntityTable<SessionRow, 'id'>;
+  favorites!: EntityTable<FavoriteRow, 'lineId'>;
   cursors!: EntityTable<CursorRow, 'key'>;
-  sceneReads!: EntityTable<SceneReadRow, 'sceneId'>;
   meta!: EntityTable<MetaRow, 'key'>;
   errors!: EntityTable<ErrorRow, 'id'>;
+  cards!: Table<LegacyRow, string>;
+  reviews!: Table<LegacyRow, number>;
+  notes!: Table<LegacyRow, string>;
+  sceneReads!: Table<LegacyRow, string>;
 
   constructor(name = DB_NAME, upTo?: number) {
     super(name);

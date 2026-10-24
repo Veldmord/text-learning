@@ -84,7 +84,7 @@ export const useApp = create<AppStore>()((set, get) => ({
       const play = hydratePlay((await res.json()) as StoredPlay);
       const index = buildIndex(play);
       set({ index, status: 'ready' });
-      // Сверка прогресса с текстом не блокирует первый экран и не тянет FSRS в стартовый бандл
+      // Сверка данных с текстом не блокирует первый экран и не тянет IndexedDB в стартовый бандл
       void Promise.all([import('../storage/db'), import('../storage/reconcile')])
         .then(([{ getDb }, { reconcileWithPlay }]) => reconcileWithPlay(getDb(), play))
         .catch(() => undefined);

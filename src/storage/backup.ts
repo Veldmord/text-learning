@@ -1,11 +1,13 @@
 // Резервная копия прогресса (раздел 11.3). Импорт сливает данные по updatedAt — побеждает последнее изменение,
 // поэтому одним файлом можно переносить прогресс между устройствами в обе стороны.
-import type { CardRow, CursorRow, NoteRow, ReviewRow, SceneReadRow } from '../engine/model';
+import type { CursorRow, FavoriteRow, SessionRow } from '../engine/model';
+import { isModeId } from '../engine/modes';
 import type { TextLearningDB } from './db';
 import { sanitizeSettings, type Settings } from './settings';
 
 export const BACKUP_FORMAT = 'text-learning-backup';
-export const BACKUP_VERSION = 1;
+/** 2 — журнал сессий и избранное. Из копий версии 1 (оценки, заметки) переносятся только позиции и настройки. */
+export const BACKUP_VERSION = 2;
 
 export interface Backup {
   format: typeof BACKUP_FORMAT;
@@ -14,21 +16,13 @@ export interface Backup {
   playSourceHash: string;
   exportedAt: string;
   settings: Settings;
-  cards: CardRow[];
-  reviews: ReviewRow[];
-  notes: NoteRow[];
+  sessions: SessionRow[];
+  favorites: FavoriteRow[];
   cursors: CursorRow[];
-  sceneReads: SceneReadRow[];
 }
 
 export async function exportBackup(db: TextLearningDB, meta: { playId: string; playSourceHash: string; settings: Settings }): Promise<Backup> {
-  const [cards, reviews, notes, cursors, sceneReads] = await Promise.all([
-    db.cards.toArray(),
-    db.reviews.toArray(),
-    db.notes.toArray(),
-    db.cursors.toArray(),
-    db.sceneReads.toArray(),
-  ]);
+  const [sessions, favorites, cursors] = await Promise.all([db.sessions.toArray(), db.favorites.toArray(), db.cursors.toArray()]);
   return {
     format: BACKUP_FORMAT,
     version: BACKUP_VERSION,
@@ -36,15 +30,24 @@ export async function exportBackup(db: TextLearningDB, meta: { playId: string; p
     playSourceHash: meta.playSourceHash,
     exportedAt: new Date().toISOString(),
     settings: meta.settings,
-    cards,
-    reviews: reviews.map(({ id: _id, ...r }) => r),
-    notes,
+    sessions,
+    favorites,
     cursors,
-    sceneReads,
   };
 }
 
 export class BackupError extends Error {}
+
+const isSession = (s: Partial<SessionRow> | null | undefined): s is SessionRow =>
+  typeof s?.id === 'string' &&
+  typeof s.rolesKey === 'string' &&
+  isModeId(s.mode) &&
+  typeof s.startedAt === 'number' &&
+  typeof s.updatedAt === 'number' &&
+  typeof s.activeMs === 'number' &&
+  typeof s.lines === 'number' &&
+  Array.isArray(s.scenes) &&
+  s.scenes.every((x) => typeof x === 'string');
 
 export function parseBackup(text: string, playId: string): Backup {
   let data: unknown;
@@ -59,7 +62,7 @@ export function parseBackup(text: string, playId: string): Backup {
     throw new BackupError('Резервная копия создана более новой версией приложения — обновите приложение');
   }
   if (b.playId !== playId) throw new BackupError(`Резервная копия относится к другой пьесе (${String(b.playId)})`);
-  const arr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+  const arr = <T>(v: unknown): Partial<T>[] => (Array.isArray(v) ? (v as Partial<T>[]) : []);
   return {
     format: BACKUP_FORMAT,
     version: b.version,
@@ -67,45 +70,39 @@ export function parseBackup(text: string, playId: string): Backup {
     playSourceHash: typeof b.playSourceHash === 'string' ? b.playSourceHash : '',
     exportedAt: typeof b.exportedAt === 'string' ? b.exportedAt : '',
     settings: sanitizeSettings(b.settings),
-    cards: arr<CardRow>(b.cards).filter((c) => typeof c?.lineId === 'string' && typeof c.updatedAt === 'number'),
-    reviews: arr<ReviewRow>(b.reviews).filter((r) => typeof r?.lineId === 'string' && typeof r.ts === 'number'),
-    notes: arr<NoteRow>(b.notes).filter((n) => typeof n?.lineId === 'string' && typeof n.updatedAt === 'number'),
-    cursors: arr<CursorRow>(b.cursors).filter((c) => typeof c?.key === 'string' && typeof c.updatedAt === 'number'),
-    sceneReads: arr<SceneReadRow>(b.sceneReads).filter((s) => typeof s?.sceneId === 'string'),
+    sessions: arr<SessionRow>(b.sessions).filter(isSession),
+    favorites: arr<FavoriteRow>(b.favorites).filter(
+      (f): f is FavoriteRow => typeof f?.lineId === 'string' && typeof f.on === 'boolean' && typeof f.updatedAt === 'number',
+    ),
+    cursors: arr<CursorRow>(b.cursors).filter((c): c is CursorRow => typeof c?.key === 'string' && typeof c.itemId === 'string' && typeof c.updatedAt === 'number'),
   };
 }
 
 export interface ImportResult {
-  cards: number;
-  reviews: number;
-  notes: number;
+  sessions: number;
+  favorites: number;
   cursors: number;
-  sceneReads: number;
+  /** Копия версии 1: оценки и заметки в этой версии не используются и не переносятся */
+  legacy: boolean;
   /** Настройки из файла новее локальных — их нужно применить */
   settings: Settings | null;
 }
 
-const reviewKey = (r: Pick<ReviewRow, 'lineId' | 'ts' | 'mode' | 'rating'>) => `${r.lineId}|${r.ts}|${r.mode}|${r.rating}`;
-
 export async function importBackup(db: TextLearningDB, backup: Backup, localSettings: Settings): Promise<ImportResult> {
-  const result: ImportResult = { cards: 0, reviews: 0, notes: 0, cursors: 0, sceneReads: 0, settings: null };
-  await db.transaction('rw', [db.cards, db.reviews, db.notes, db.cursors, db.sceneReads], async () => {
-    for (const c of backup.cards) {
-      const local = await db.cards.get(c.lineId);
-      if (!local || local.updatedAt < c.updatedAt) {
-        await db.cards.put(c);
-        result.cards++;
+  const result: ImportResult = { sessions: 0, favorites: 0, cursors: 0, legacy: backup.version < 2, settings: null };
+  await db.transaction('rw', [db.sessions, db.favorites, db.cursors], async () => {
+    for (const s of backup.sessions) {
+      const local = await db.sessions.get(s.id);
+      if (!local || local.updatedAt < s.updatedAt) {
+        await db.sessions.put(s);
+        result.sessions++;
       }
     }
-    const existing = new Set((await db.reviews.toArray()).map(reviewKey));
-    const fresh = backup.reviews.filter((r) => !existing.has(reviewKey(r))).map(({ id: _id, ...r }) => r);
-    if (fresh.length) await db.reviews.bulkAdd(fresh);
-    result.reviews = fresh.length;
-    for (const n of backup.notes) {
-      const local = await db.notes.get(n.lineId);
-      if (!local || local.updatedAt < n.updatedAt) {
-        await db.notes.put(n);
-        result.notes++;
+    for (const f of backup.favorites) {
+      const local = await db.favorites.get(f.lineId);
+      if (!local || local.updatedAt < f.updatedAt) {
+        await db.favorites.put(f);
+        result.favorites++;
       }
     }
     for (const c of backup.cursors) {
@@ -113,13 +110,6 @@ export async function importBackup(db: TextLearningDB, backup: Backup, localSett
       if (!local || local.updatedAt < c.updatedAt) {
         await db.cursors.put(c);
         result.cursors++;
-      }
-    }
-    for (const s of backup.sceneReads) {
-      const local = await db.sceneReads.get(s.sceneId);
-      if (!local || local.updatedAt < s.updatedAt) {
-        await db.sceneReads.put(s);
-        result.sceneReads++;
       }
     }
   });
