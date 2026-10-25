@@ -3,4 +3,4 @@ omegaconf==2.3.0
 numpy>=1.26,<3
 # модель Silero v5 импортирует scipy при загрузке (torch.hub)
 scipy>=1.11,<2
-piper-tts>=1.3,<2
+piper-tts>=1.8.0,<2
