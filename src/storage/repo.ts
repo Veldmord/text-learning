@@ -31,6 +31,16 @@ export class Repo implements StorePort {
     await this.db.favorites.put({ lineId, on, updatedAt: Date.now() });
   }
 
+  /** Непустые заметки: lineId → текст */
+  async notes(): Promise<Map<string, string>> {
+    return new Map((await this.db.notes.toArray()).filter((n) => n.text).map((n) => [n.lineId, n.text]));
+  }
+
+  /** Пустой текст удаляет заметку, но запись остаётся — чтобы удаление пережило слияние копий. */
+  async saveNote(lineId: LineId, text: string): Promise<void> {
+    await this.db.notes.put({ lineId, text: text.trim(), updatedAt: Date.now() });
+  }
+
   async saveCursor(key: string, itemId: string | null): Promise<void> {
     if (itemId === null) await this.db.cursors.delete(key);
     else await this.db.cursors.put({ key, itemId, updatedAt: Date.now() });
@@ -68,7 +78,7 @@ export class Repo implements StorePort {
     return this.db.errors.orderBy('id').reverse().limit(limit).toArray();
   }
 
-  /** Сбросить журнал сессий, позиции и данные прежних версий. Избранное остаётся. */
+  /** Сбросить журнал сессий, позиции и данные прежних версий. Избранное и заметки остаются. */
   async resetProgress(): Promise<void> {
     const { sessions, cursors, cards, reviews, sceneReads } = this.db;
     await this.db.transaction('rw', [sessions, cursors, cards, reviews, sceneReads], async () => {

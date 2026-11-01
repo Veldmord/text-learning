@@ -96,3 +96,29 @@ test('текст: поиск, избранное и «Прогон отсюда�
   await expect(page.locator('.mine-line')).toContainText('В с М.');
   await expect(page).not.toHaveURL(/at=/);
 });
+
+test('текст: заметка к реплике партнёра', async ({ page }) => {
+  await chooseRole(page, 'Девушка');
+  await page.getByRole('link', { name: /Открыть текст/ }).click();
+  const item = page.locator('#L0005');
+  await expect(item).not.toHaveClass(/item--mine/);
+  await item.locator('.text-line').click();
+  await item.getByRole('button', { name: 'Заметка', exact: true }).click();
+  await item.getByLabel('Заметка к реплике').fill('  Здесь я встаю  ');
+  await expectNoSeriousA11yIssues(page);
+  await item.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(item.locator('.note')).toHaveText('Здесь я встаю');
+
+  await page.reload();
+  await expect(page.locator('#L0005 .note')).toHaveText('Здесь я встаю');
+  await page.getByRole('button', { name: 'Назад', exact: true }).click();
+  await expect(page.getByRole('link', { name: /Открыть текст/ })).toContainText('1 заметка');
+
+  await page.getByRole('link', { name: /Открыть текст/ }).click();
+  await item.locator('.text-line').click();
+  await item.getByRole('button', { name: 'Изменить заметку' }).click();
+  await expect(item.getByLabel('Заметка к реплике')).toHaveValue('Здесь я встаю');
+  await item.getByRole('button', { name: 'Удалить' }).click();
+  await expect(item.locator('.note')).toHaveCount(0);
+  await expect(item.getByRole('button', { name: 'Заметка', exact: true })).toBeVisible();
+});

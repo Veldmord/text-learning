@@ -1,4 +1,4 @@
-// Экран «Текст» (раздел 5.1): вся пьеса, подсвечена своя роль; поиск (FR-16), избранное (FR-11) и «Прогон отсюда».
+// Экран «Текст» (раздел 5.1): вся пьеса, подсвечена своя роль; поиск (FR-16), избранное (FR-11), заметки (FR-18) и «Прогон отсюда».
 import { useMemo, useState } from 'react';
 import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { parseRoles, roleNames, sceneRefLabel, searchPlay, speakerName, type PlayIndex, type SceneRef } from '../../engine/queries';
@@ -22,6 +22,8 @@ interface LineActions {
   onSelect: (id: string | null) => void;
   favorites: ReadonlySet<string>;
   onFavorite: (id: Line['id'], on: boolean) => void;
+  notes: ReadonlyMap<string, string>;
+  onSaveNote: (id: Line['id'], text: string) => Promise<void>;
   onRunFrom: (id: string) => void;
 }
 
@@ -33,6 +35,7 @@ function PlayText({ index, roles }: { index: PlayIndex; roles: string[] }) {
   const directions = useSettings((s) => s.directions);
   const skipScenesWithoutRole = useSettings((s) => s.skipScenesWithoutRole);
   const favorites = useLiveQuery(() => repo.favorites(), [], new Set<string>());
+  const notes = useLiveQuery(() => repo.notes(), [], new Map<string, string>());
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const hits = useMemo(() => searchPlay(index, query), [index, query]);
@@ -56,6 +59,8 @@ function PlayText({ index, roles }: { index: PlayIndex; roles: string[] }) {
     onSelect: setSelected,
     favorites,
     onFavorite: (id, on) => void repo.setFavorite(id, on),
+    notes,
+    onSaveNote: (id, text) => repo.saveNote(id, text),
     onRunFrom: (id) => navigate(`${base}/train/run?at=${id}`),
   };
 
@@ -129,7 +134,7 @@ function PlayText({ index, roles }: { index: PlayIndex; roles: string[] }) {
                 ))}
               </select>
             </div>
-            <p className="small muted">Ваши реплики подсвечены. Нажмите на реплику, чтобы добавить её в избранное или начать с неё прогон.</p>
+            <p className="small muted">Ваши реплики подсвечены. Нажмите на реплику, чтобы добавить её в избранное, оставить заметку или начать с неё прогон.</p>
 
             {index.play.acts.map((act) => (
               <section key={act.n} aria-labelledby={`act-${act.n}`}>
@@ -224,16 +229,46 @@ function TextItem({ item, index, mine, showAsides, actions }: { item: Item; inde
           <ItemBody item={item} showAsides={showAsides} />
         </span>
       </button>
-      {selected && <LineActionsRow line={item} favorite={favorite} actions={actions} />}
+      <LineTools line={item} favorite={favorite} open={selected} actions={actions} />
     </div>
   );
 }
 
-function LineActionsRow({ line, favorite, actions, onShow }: { line: Line; favorite: boolean; actions: LineActions; onShow?: () => void }) {
+/** Заметка под репликой и действия с ней. Начатая правка остаётся открытой, пока её не сохранят или не отменят. */
+function LineTools({ line, favorite, open, actions, onShow }: { line: Line; favorite: boolean; open: boolean; actions: LineActions; onShow?: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const note = actions.notes.get(line.id);
+  if (editing) return <NoteEditor line={line} note={note} onSave={(text) => actions.onSaveNote(line.id, text)} onDone={() => setEditing(false)} />;
+  return (
+    <>
+      {note && <p className="note">{note}</p>}
+      {open && <LineActionsRow line={line} favorite={favorite} hasNote={!!note} actions={actions} onNote={() => setEditing(true)} onShow={onShow} />}
+    </>
+  );
+}
+
+function LineActionsRow({
+  line,
+  favorite,
+  hasNote,
+  actions,
+  onNote,
+  onShow,
+}: {
+  line: Line;
+  favorite: boolean;
+  hasNote: boolean;
+  actions: LineActions;
+  onNote: () => void;
+  onShow?: () => void;
+}) {
   return (
     <div className="row text-actions">
       <button className="btn btn--small" type="button" aria-pressed={favorite} onClick={() => actions.onFavorite(line.id, !favorite)}>
         <Icon name={favorite ? 'star' : 'starOutline'} /> {favorite ? 'Убрать из избранного' : 'В избранное'}
+      </button>
+      <button className="btn btn--small" type="button" onClick={onNote}>
+        <Icon name="note" /> {hasNote ? 'Изменить заметку' : 'Заметка'}
       </button>
       <button className="btn btn--small btn--primary" type="button" onClick={() => actions.onRunFrom(line.id)}>
         <Icon name="play" /> Прогон отсюда
@@ -244,6 +279,39 @@ function LineActionsRow({ line, favorite, actions, onShow }: { line: Line; favor
         </button>
       )}
     </div>
+  );
+}
+
+function NoteEditor({ line, note, onSave, onDone }: { line: Line; note: string | undefined; onSave: (text: string) => Promise<void>; onDone: () => void }) {
+  const [text, setText] = useState(note ?? '');
+  const id = `note-${line.id}`;
+  const save = (value: string) => void onSave(value).then(onDone);
+  return (
+    <form
+      className="note-editor"
+      onSubmit={(e) => {
+        e.preventDefault();
+        save(text);
+      }}
+    >
+      <label className="field__label small" htmlFor={id}>
+        Заметка к реплике
+      </label>
+      <textarea id={id} className="input" value={text} onChange={(e) => setText(e.target.value)} placeholder="Например: здесь встаю и иду к окну" autoFocus />
+      <div className="row" style={{ marginTop: 6 }}>
+        <button className="btn btn--primary btn--small" type="submit">
+          Сохранить
+        </button>
+        {note && (
+          <button className="btn btn--small" type="button" onClick={() => save('')}>
+            Удалить
+          </button>
+        )}
+        <button className="btn btn--ghost btn--small" type="button" onClick={onDone}>
+          Отмена
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -274,7 +342,7 @@ function FavoritesList({ index, roles, actions, onShow }: { index: PlayIndex; ro
             <div className="play-text">
               <ItemBody item={l} showAsides />
             </div>
-            <LineActionsRow line={l} favorite actions={actions} onShow={() => onShow(l.id)} />
+            <LineTools line={l} favorite open actions={actions} onShow={() => onShow(l.id)} />
           </div>
         );
       })}

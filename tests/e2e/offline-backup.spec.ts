@@ -27,12 +27,16 @@ test('экспорт и импорт прогресса JSON-файлом', asyn
   await expect(page.getByText(/^2 \/ \d+$/)).toBeVisible();
   await page.getByRole('button', { name: /^Открыть/ }).click();
 
-  // Своя реплика в избранное — из текста; уход с экрана записывает и вторую реплику
+  // Своя реплика в избранное и с заметкой — из текста; уход с экрана записывает и вторую реплику
   await page.goto('./#/r/zhenshchina/read');
   const first = page.locator('.item--mine').first();
   await first.locator('.text-line').click();
   await first.getByRole('button', { name: 'В избранное' }).click();
   await expect(first.getByRole('img', { name: 'В избранном' })).toBeVisible();
+  await first.getByRole('button', { name: 'Заметка', exact: true }).click();
+  await first.getByLabel('Заметка к реплике').fill('с кошелками');
+  await first.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(first.locator('.note')).toHaveText('с кошелками');
 
   await page.goto('./#/settings');
   const download = page.waitForEvent('download');
@@ -40,9 +44,10 @@ test('экспорт и импорт прогресса JSON-файлом', asyn
   const file = testInfo.outputPath('backup.json');
   await (await download).saveAs(file);
   const backup = JSON.parse(readFileSync(file, 'utf8'));
-  expect(backup).toMatchObject({ format: 'text-learning-backup', version: 2, playId: 'raiskie-vrata' });
+  expect(backup).toMatchObject({ format: 'text-learning-backup', version: 3, playId: 'raiskie-vrata' });
   expect(backup.sessions).toHaveLength(1);
   expect(backup.favorites).toHaveLength(1);
+  expect(backup.notes).toMatchObject([{ text: 'с кошелками' }]);
 
   // Другое «устройство»: чистый контекст
   const other = await browser.newContext();
@@ -50,10 +55,11 @@ test('экспорт и импорт прогресса JSON-файлом', asyn
   await stubSpeech(page2);
   await page2.goto('./#/settings');
   await page2.getByLabel('Загрузить из файла').setInputFiles(file);
-  await expect(page2.getByText(/Импортировано: тренировок 1, избранного 1/)).toBeVisible();
+  await expect(page2.getByText(/Импортировано: тренировок 1, избранного 1, заметок 1/)).toBeVisible();
   await page2.goto('./#/r/zhenshchina/stats');
   await expect(page2.locator('.kpi').filter({ hasText: 'своих реплик сказано' })).toContainText('2');
   await page2.goto('./#/r/zhenshchina');
   await expect(page2.getByRole('link', { name: /Избранное · 1/ })).toBeVisible();
+  await expect(page2.getByRole('link', { name: /Открыть текст/ })).toContainText('1 заметка');
   await other.close();
 });

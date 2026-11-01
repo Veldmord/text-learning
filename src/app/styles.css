@@ -263,6 +263,8 @@ textarea.input { min-height: 96px; resize: vertical; line-height: 1.45; }
 .text-line .icon { width: 18px; height: 18px; color: var(--accent); }
 .item--selected { box-shadow: 0 0 0 2px var(--focus); }
 .text-actions { margin-top: 8px; }
+.note { margin: 6px 0 0; padding: 6px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 0.92rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-editor { margin-top: 8px; }
 
 /* ---------- Сессия ---------- */
 

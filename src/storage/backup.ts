@@ -1,13 +1,13 @@
 // Резервная копия прогресса (раздел 11.3). Импорт сливает данные по updatedAt — побеждает последнее изменение,
 // поэтому одним файлом можно переносить прогресс между устройствами в обе стороны.
-import type { CursorRow, FavoriteRow, SessionRow } from '../engine/model';
+import type { CursorRow, FavoriteRow, NoteRow, SessionRow } from '../engine/model';
 import { isModeId } from '../engine/modes';
 import type { TextLearningDB } from './db';
 import { sanitizeSettings, type Settings } from './settings';
 
 export const BACKUP_FORMAT = 'text-learning-backup';
-/** 2 — журнал сессий и избранное. Из копий версии 1 (оценки, заметки) переносятся только позиции и настройки. */
-export const BACKUP_VERSION = 2;
+/** 2 — журнал сессий и избранное; 3 — заметки. Из копий версии 1 переносятся позиции, заметки и настройки, оценки — нет. */
+export const BACKUP_VERSION = 3;
 
 export interface Backup {
   format: typeof BACKUP_FORMAT;
@@ -18,11 +18,12 @@ export interface Backup {
   settings: Settings;
   sessions: SessionRow[];
   favorites: FavoriteRow[];
+  notes: NoteRow[];
   cursors: CursorRow[];
 }
 
 export async function exportBackup(db: TextLearningDB, meta: { playId: string; playSourceHash: string; settings: Settings }): Promise<Backup> {
-  const [sessions, favorites, cursors] = await Promise.all([db.sessions.toArray(), db.favorites.toArray(), db.cursors.toArray()]);
+  const [sessions, favorites, notes, cursors] = await Promise.all([db.sessions.toArray(), db.favorites.toArray(), db.notes.toArray(), db.cursors.toArray()]);
   return {
     format: BACKUP_FORMAT,
     version: BACKUP_VERSION,
@@ -32,6 +33,7 @@ export async function exportBackup(db: TextLearningDB, meta: { playId: string; p
     settings: meta.settings,
     sessions,
     favorites,
+    notes,
     cursors,
   };
 }
@@ -74,6 +76,10 @@ export function parseBackup(text: string, playId: string): Backup {
     favorites: arr<FavoriteRow>(b.favorites).filter(
       (f): f is FavoriteRow => typeof f?.lineId === 'string' && typeof f.on === 'boolean' && typeof f.updatedAt === 'number',
     ),
+    // Формат заметок не менялся с версии 1; поля прежних версий (stale) отбрасываются
+    notes: arr<NoteRow>(b.notes)
+      .filter((x): x is NoteRow => typeof x?.lineId === 'string' && typeof x.text === 'string' && typeof x.updatedAt === 'number')
+      .map(({ lineId, text, updatedAt }) => ({ lineId, text, updatedAt })),
     cursors: arr<CursorRow>(b.cursors).filter((c): c is CursorRow => typeof c?.key === 'string' && typeof c.itemId === 'string' && typeof c.updatedAt === 'number'),
   };
 }
@@ -81,16 +87,17 @@ export function parseBackup(text: string, playId: string): Backup {
 export interface ImportResult {
   sessions: number;
   favorites: number;
+  notes: number;
   cursors: number;
-  /** Копия версии 1: оценки и заметки в этой версии не используются и не переносятся */
+  /** Копия версии 1: оценки в этой версии не используются и не переносятся */
   legacy: boolean;
   /** Настройки из файла новее локальных — их нужно применить */
   settings: Settings | null;
 }
 
 export async function importBackup(db: TextLearningDB, backup: Backup, localSettings: Settings): Promise<ImportResult> {
-  const result: ImportResult = { sessions: 0, favorites: 0, cursors: 0, legacy: backup.version < 2, settings: null };
-  await db.transaction('rw', [db.sessions, db.favorites, db.cursors], async () => {
+  const result: ImportResult = { sessions: 0, favorites: 0, notes: 0, cursors: 0, legacy: backup.version < 2, settings: null };
+  await db.transaction('rw', [db.sessions, db.favorites, db.notes, db.cursors], async () => {
     for (const s of backup.sessions) {
       const local = await db.sessions.get(s.id);
       if (!local || local.updatedAt < s.updatedAt) {
@@ -103,6 +110,13 @@ export async function importBackup(db: TextLearningDB, backup: Backup, localSett
       if (!local || local.updatedAt < f.updatedAt) {
         await db.favorites.put(f);
         result.favorites++;
+      }
+    }
+    for (const note of backup.notes) {
+      const local = await db.notes.get(note.lineId);
+      if (!local || local.updatedAt < note.updatedAt) {
+        await db.notes.put(note);
+        result.notes++;
       }
     }
     for (const c of backup.cursors) {

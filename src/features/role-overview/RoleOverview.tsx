@@ -39,6 +39,7 @@ export function RoleOverview() {
 
   const sessions = useLiveQuery(() => repo.sessions(key), [key], [] as SessionRow[]);
   const favorites = useLiveQuery(() => repo.favorites(), [], new Set<string>());
+  const notes = useLiveQuery(() => repo.notes(), [], new Map<string, string>());
   const cursors = useLiveQuery(() => repo.allCursors(), [], []);
 
   useEffect(() => {
@@ -92,6 +93,7 @@ export function RoleOverview() {
       })()
     : null;
   const favCount = index.lines.filter((l) => favorites.has(l.id)).length;
+  const noteCount = index.lines.filter((l) => notes.has(l.id)).length;
   const empty = linesInScope.length === 0;
   const sceneMode = scopeKind(scope) === 'scenes';
 
@@ -151,7 +153,10 @@ export function RoleOverview() {
               📖
             </span>
             <strong>Открыть текст</strong>
-            <span>Вся пьеса, подсвечена ваша роль</span>
+            <span>
+              Вся пьеса, подсвечена ваша роль
+              {noteCount > 0 && ` · ${noteCount} ${plural(noteCount, 'заметка', 'заметки', 'заметок')}`}
+            </span>
           </Link>
           {empty ? (
             <div className="main-action main-action--primary" aria-disabled="true">

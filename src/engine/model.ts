@@ -26,6 +26,13 @@ export interface FavoriteRow {
   updatedAt: number;
 }
 
+/** Заметка к реплике. Удаление хранится как пустой text, чтобы пережить слияние резервных копий. */
+export interface NoteRow {
+  lineId: LineId;
+  text: string;
+  updatedAt: number;
+}
+
 export interface CursorRow {
   /** roles:mode:scope */
   key: string;

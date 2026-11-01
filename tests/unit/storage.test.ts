@@ -96,6 +96,20 @@ describe('Repo', () => {
     expect((await db.favorites.get('L0001'))?.on).toBe(false);
   });
 
+  it('заметки: пробелы обрезаются, удаление хранится, чтобы пережить слияние копий', async () => {
+    await repo.saveNote('L0001', '  здесь встаю  ');
+    await repo.saveNote('L0004', 'к окну');
+    expect(await repo.notes()).toEqual(
+      new Map([
+        ['L0001', 'здесь встаю'],
+        ['L0004', 'к окну'],
+      ]),
+    );
+    await repo.saveNote('L0001', '   ');
+    expect(await repo.notes()).toEqual(new Map([['L0004', 'к окну']]));
+    expect((await db.notes.get('L0001'))?.text).toBe('');
+  });
+
   it('курсоры и мета', async () => {
     await repo.saveCursor('a:run:all', 'L0004');
     expect((await repo.getCursor('a:run:all'))?.itemId).toBe('L0004');
@@ -118,7 +132,7 @@ describe('Repo', () => {
     await repo.setFavorite('L0004', true);
     await db.cards.put({ lineId: 'L0001' });
     await db.reviews.add({ lineId: 'L0001', ts: T });
-    await db.notes.put({ lineId: 'L0001', text: 'смысл' });
+    await repo.saveNote('L0001', 'смысл');
     await repo.resetProgress();
     expect(await db.sessions.count()).toBe(0);
     expect(await db.cursors.count()).toBe(0);
@@ -152,49 +166,59 @@ describe('резервная копия', () => {
     await repo.saveSession(session());
     await repo.setFavorite('L0001', true);
     await repo.setFavorite('L0004', false);
+    await repo.saveNote('L0001', 'смысл');
     await repo.saveCursor('a:run:all', 'L0004');
     const settings = { ...DEFAULT_SETTINGS, speed: 1.5, updatedAt: T };
     const backup = await exportBackup(db, { playId: 'mini', playSourceHash: play.sourceHash, settings });
-    expect(backup).toMatchObject({ version: 2, sessions: [session()] });
+    expect(backup).toMatchObject({ version: 3, sessions: [session()] });
     expect(backup.favorites).toHaveLength(2);
+    expect(backup.notes).toMatchObject([{ lineId: 'L0001', text: 'смысл' }]);
 
     const other = new TextLearningDB(`import-${++n}`);
     await other.open();
     const parsed = parseBackup(JSON.stringify(backup), 'mini');
     const res = await importBackup(other, parsed, DEFAULT_SETTINGS);
-    expect(res).toMatchObject({ sessions: 1, favorites: 2, cursors: 1, legacy: false });
+    expect(res).toMatchObject({ sessions: 1, favorites: 2, notes: 1, cursors: 1, legacy: false });
     expect(res.settings?.speed).toBe(1.5);
     expect(await new Repo(other).favorites()).toEqual(new Set(['L0001']));
+    expect(await new Repo(other).notes()).toEqual(new Map([['L0001', 'смысл']]));
     const again = await importBackup(other, parsed, settings);
-    expect(again).toMatchObject({ sessions: 0, favorites: 0, cursors: 0, settings: null });
+    expect(again).toMatchObject({ sessions: 0, favorites: 0, notes: 0, cursors: 0, settings: null });
     other.close();
     await Dexie.delete(other.name);
   });
 
-  it('при слиянии побеждает последнее изменение, снятие из избранного переносится', async () => {
+  it('при слиянии побеждает последнее изменение, снятие из избранного и удаление заметки переносятся', async () => {
     await repo.saveSession(session({ activeMs: 9000, updatedAt: T + 10 }));
     await db.favorites.put({ lineId: 'L0001', on: true, updatedAt: T });
     await db.favorites.put({ lineId: 'L0004', on: true, updatedAt: T + 100 });
+    await db.notes.put({ lineId: 'L0001', text: 'старая', updatedAt: T });
+    await db.notes.put({ lineId: 'L0004', text: 'локальная', updatedAt: T + 100 });
     const backup = parseBackup(
       JSON.stringify({
         format: 'text-learning-backup',
-        version: 2,
+        version: 3,
         playId: 'mini',
         sessions: [session({ activeMs: 1000, updatedAt: T }), session({ id: 'x2' })],
         favorites: [
           { lineId: 'L0001', on: false, updatedAt: T + 50 },
           { lineId: 'L0004', on: false, updatedAt: T + 50 },
         ],
+        notes: [
+          { lineId: 'L0001', text: '', updatedAt: T + 50 },
+          { lineId: 'L0004', text: 'из файла', updatedAt: T + 50 },
+        ],
       }),
       'mini',
     );
     const res = await importBackup(db, backup, DEFAULT_SETTINGS);
-    expect(res).toMatchObject({ sessions: 1, favorites: 1 });
+    expect(res).toMatchObject({ sessions: 1, favorites: 1, notes: 1 });
     expect((await db.sessions.get('x1'))?.activeMs).toBe(9000);
     expect(await repo.favorites()).toEqual(new Set(['L0004']));
+    expect(await repo.notes()).toEqual(new Map([['L0004', 'локальная']]));
   });
 
-  it('копия прежней версии: переносятся позиции, оценки и заметки пропускаются', async () => {
+  it('копии прежних версий: из v1 переносятся позиции и заметки, оценки пропускаются; в v2 заметок нет', async () => {
     const backup = parseBackup(
       JSON.stringify({
         format: 'text-learning-backup',
@@ -202,14 +226,18 @@ describe('резервная копия', () => {
         playId: 'mini',
         cards: [{ lineId: 'L0001', updatedAt: T }],
         reviews: [{ lineId: 'L0001', ts: T }],
-        notes: [{ lineId: 'L0001', text: 'смысл', updatedAt: T }],
+        notes: [{ lineId: 'L0001', text: 'смысл', updatedAt: T, stale: true }],
         cursors: [{ key: 'a:letters:all', itemId: 'L0004', updatedAt: T }],
       }),
       'mini',
     );
-    expect(await importBackup(db, backup, DEFAULT_SETTINGS)).toMatchObject({ sessions: 0, favorites: 0, cursors: 1, legacy: true });
+    expect(await importBackup(db, backup, DEFAULT_SETTINGS)).toMatchObject({ sessions: 0, favorites: 0, notes: 1, cursors: 1, legacy: true });
     expect(await db.cards.count()).toBe(0);
-    expect(await db.notes.count()).toBe(0);
+    expect(await db.notes.get('L0001')).toEqual({ lineId: 'L0001', text: 'смысл', updatedAt: T });
+
+    const v2 = parseBackup(JSON.stringify({ format: 'text-learning-backup', version: 2, playId: 'mini', favorites: [{ lineId: 'L0004', on: true, updatedAt: T }] }), 'mini');
+    expect(v2.notes).toEqual([]);
+    expect(await importBackup(db, v2, DEFAULT_SETTINGS)).toMatchObject({ favorites: 1, notes: 0, legacy: false });
   });
 
   it('отклоняет чужие и повреждённые файлы и записи', () => {
@@ -224,12 +252,14 @@ describe('резервная копия', () => {
         playId: 'mini',
         sessions: [session({ mode: 'cue' as SessionRow['mode'] }), { id: 'y' }, session({ scenes: [1] as unknown as string[] }), session({ id: 'ok' })],
         favorites: [{ lineId: 'L0001' }, { lineId: 'L0004', on: true, updatedAt: T }],
+        notes: [{ lineId: 'L0001', text: 5, updatedAt: T }, { lineId: 'L0004', updatedAt: T }, null, { lineId: 'L0007', text: 'ok', updatedAt: T }],
         cursors: 'bad',
       }),
       'mini',
     );
     expect(b.sessions.map((s) => s.id)).toEqual(['ok']);
     expect(b.favorites.map((f) => f.lineId)).toEqual(['L0004']);
+    expect(b.notes.map((x) => x.lineId)).toEqual(['L0007']);
     expect(b.cursors).toEqual([]);
     expect(backupFileName(new Date('2026-11-20T18:30:00Z'))).toBe('text-learning-2026-11-20.json');
   });
