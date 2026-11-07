@@ -192,6 +192,45 @@ describe('Прогон: все реплики по очереди', () => {
     expect(m.s).toMatchObject({ index: 1, phase: 'prompt' });
   });
 
+  it('на своей реплике «Далее» сразу ведёт к следующей, не открывая текст', () => {
+    const m = run('run', flow('L0001* L0002'));
+    m.endAudio();
+    m.endAudio();
+    expect(m.s).toMatchObject({ index: 0, phase: 'prompt' });
+    m.d({ type: 'next', now: 3 });
+    expect(m.s).toMatchObject({ index: 1, phase: 'context' });
+    expect(m.leaves()).toEqual([{ type: 'leave', mode: 'run', step: flow('L0001*')[0], next: flow('L0002')[0], ms: 3, said: true, forward: true }]);
+  });
+
+  it('на своей реплике «Открыть» по-прежнему показывает текст, «Далее» после него ведёт дальше', () => {
+    const m = run('run', flow('L0001* L0002'));
+    m.endAudio();
+    m.endAudio();
+    m.d({ type: 'reveal' });
+    expect(m.s).toMatchObject({ index: 0, phase: 'revealed' });
+    m.d({ type: 'next', now: 1 });
+    expect(m.s).toMatchObject({ index: 1, phase: 'context' });
+  });
+
+  it('пока звучит ремарка перед своей репликой, «Далее» её пропускает, следующее — ведёт дальше', () => {
+    const m = run('run', flow('L0001* L0002'));
+    m.d({ type: 'next', now: 1 });
+    expect(m.s).toMatchObject({ index: 0, phase: 'prompt', seen: ['L0001'] });
+    expect(m.e).toContainEqual({ type: 'stopAudio' });
+    m.d({ type: 'next', now: 2 });
+    expect(m.s).toMatchObject({ index: 1, phase: 'context' });
+  });
+
+  it('без автоперехода: подсказка доиграла — «Далее» засчитывает реплику и ведёт дальше', () => {
+    const m = run('run', flow('L0001* L0002'), { autoAdvance: false, echo: false });
+    m.endAudio();
+    m.endAudio();
+    expect(m.s).toMatchObject({ index: 0, phase: 'cue', cueDone: true });
+    m.d({ type: 'next', now: 4 });
+    expect(m.s).toMatchObject({ index: 1, phase: 'context', seen: ['L0001'] });
+    expect(m.leaves()[0]).toMatchObject({ said: true, forward: true });
+  });
+
   it('пауза на реплике партнёра держит прогон', () => {
     const m = run('run', flow('L0001 L0002*'));
     m.endAudio();

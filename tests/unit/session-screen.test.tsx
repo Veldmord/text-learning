@@ -104,8 +104,7 @@ describe('экран сессии', () => {
     const mine = () => container.querySelector('.mine-line')!;
     expect(screen.getByText('Комната. Анна у окна.')).toBeTruthy();
     expect(mine().querySelector('.letters')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Далее (→)' }));
-    await waitFor(() => expect(mine().textContent).toContain('Ты пришёл? Я ждала.'));
+    // «Далее» на своей реплике не открывает её, а сразу ведёт сцену дальше
     fireEvent.click(screen.getByRole('button', { name: 'Далее (→)' }));
     // Реплики Бориса проходят сами, прогон останавливается на следующей реплике Анны
     await screen.findByText('4 / 8', undefined, { timeout: 3000 });

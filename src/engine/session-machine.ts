@@ -225,11 +225,19 @@ export function reduce(s: SessionState, a: SessionAction): Transition {
 
     case 'next': {
       if (s.phase === 'done' || !step) return [s, []];
-      // На своей реплике «Далее» пропускает звук → открывает реплику → ведёт дальше
-      if (step.mine && s.mode !== 'audio') {
+      if (step.mine && s.mode === 'letters') {
+        // «Первые буквы»: «Далее» пропускает звук → открывает реплику → ведёт дальше
         if (s.phase === 'context' || s.phase === 'cue') return enterPrompt(s, [{ type: 'stopAudio' }]);
         if (s.phase === 'prompt') return enterRevealed(s);
       }
+      if (step.mine && s.mode === 'run' && (s.phase === 'context' || s.phase === 'cue')) {
+        // Прогон: пока звучит подсказка, «Далее» её пропускает
+        if (!s.cueDone) return enterPrompt(s, [{ type: 'stopAudio' }]);
+        // Подсказка доиграла без автоперехода — очередь уже дошла до актёра: реплика сказана
+        const said: SessionState = { ...s, phase: 'prompt', seen: markSeen(s) };
+        return enterStep(said, s.index + 1, a.now, leave(said, a.now, true));
+      }
+      // Прогон: на своей реплике «Далее» сразу ведёт к следующей, не открывая текст
       return enterStep(s, s.index + 1, a.now, leave(s, a.now, true));
     }
 
